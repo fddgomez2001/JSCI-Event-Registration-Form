@@ -1,10 +1,20 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
 type PsgcLocation = {
   code: string;
   name: string;
+};
+
+type IndividualPayload = {
+  name: string;
+  church: string;
+  ministry: string;
+  address: string;
+  localChurchPastor: string;
+  phoneNumber: string;
+  conference: "leyte" | "cebu";
 };
 
 const PSGC_BASE_URL = "https://psgc.gitlab.io/api";
@@ -17,9 +27,21 @@ const municipalityCache = new Map<string, PsgcLocation[]>();
 const barangayCache = new Map<string, PsgcLocation[]>();
 
 export default function IndividualRegistrationPage() {
+  const formRef = useRef<HTMLFormElement | null>(null);
+  const [conference, setConference] = useState<"leyte" | "cebu">("leyte");
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const value = (params.get("conference") ?? "leyte").toLowerCase();
+    setConference(value === "cebu" ? "cebu" : "leyte");
+  }, []);
+  const conferenceLabel = conference === "cebu" ? "Cebu" : "Leyte";
+
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [status, setStatus] = useState<string>("");
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [pendingPayload, setPendingPayload] = useState<IndividualPayload | null>(null);
   const [churchOptions, setChurchOptions] = useState<string[]>([]);
   const [church, setChurch] = useState("");
   const [selectedLocation, setSelectedLocation] = useState<"Leyte" | "Cebu" | "">("");
@@ -157,7 +179,7 @@ export default function IndividualRegistrationPage() {
   useEffect(() => {
     async function loadChurchOptions() {
       try {
-        const response = await fetch("/api/registrations", { cache: "no-store" });
+        const response = await fetch(`/api/registrations?conference=${conference}`, { cache: "no-store" });
         if (!response.ok) return;
 
         const data = (await response.json()) as { churches?: string[] };
@@ -169,28 +191,37 @@ export default function IndividualRegistrationPage() {
     }
 
     void loadChurchOptions();
-  }, []);
+  }, [conference]);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setIsSubmitting(true);
     setStatus("");
 
-    const form = event.currentTarget;
-    const formData = new FormData(form);
-    const payload = {
+    const formData = new FormData(event.currentTarget);
+    const payload: IndividualPayload = {
       name: String(formData.get("name") ?? ""),
       church: church,
       ministry: String(formData.get("ministry") ?? ""),
       address: computedAddress,
       localChurchPastor: String(formData.get("localChurchPastor") ?? ""),
       phoneNumber: String(formData.get("phoneNumber") ?? ""),
+      conference,
     };
+
+    setPendingPayload(payload);
+    setShowConfirmModal(true);
+  }
+
+  async function confirmRegistrationSubmission() {
+    if (!pendingPayload) return;
+
+    setIsSubmitting(true);
+    setStatus("");
 
     const response = await fetch("/api/registrations", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type: "individual", payload }),
+      body: JSON.stringify({ type: "individual", payload: pendingPayload }),
     });
 
     let data: { error?: string; message?: string } = {};
@@ -206,7 +237,7 @@ export default function IndividualRegistrationPage() {
       return;
     }
 
-    form.reset();
+    formRef.current?.reset();
     setChurch("");
     setSelectedLocation("");
     setSelectedMunicipalityCode("");
@@ -215,9 +246,16 @@ export default function IndividualRegistrationPage() {
     setSelectedBarangay("");
     setAddressDetails("");
     setAddressError("");
+    setPendingPayload(null);
+    setShowConfirmModal(false);
     setStatus("Individual registration submitted successfully.");
     setShowSuccessModal(true);
     setIsSubmitting(false);
+  }
+
+  function cancelRegistrationSubmission() {
+    setShowConfirmModal(false);
+    setPendingPayload(null);
   }
 
   return (
@@ -227,15 +265,18 @@ export default function IndividualRegistrationPage() {
           <a href="/" className="text-amber-300 underline underline-offset-2">
             Back to Landing Page
           </a>
-          <a href="/register/bulk" className="text-amber-200 underline underline-offset-2 hover:text-amber-100">
+          <a href={`/register/bulk?conference=${conference}`} className="text-amber-200 underline underline-offset-2 hover:text-amber-100">
             Switch to Bulk Registration
           </a>
         </div>
 
         <h1 className="mt-3 text-2xl font-bold text-amber-100">Individual Registration</h1>
-        <p className="mb-4 mt-1 text-sm text-amber-200">All fields are required.</p>
+        <p className="mb-1 mt-1 text-sm text-amber-200">All fields are required.</p>
+        <p className="mb-4 text-xs font-semibold uppercase tracking-[0.08em] text-amber-300">
+          Conference: {conferenceLabel}
+        </p>
 
-        <form className="grid gap-3" onSubmit={onSubmit}>
+        <form ref={formRef} className="grid gap-3" onSubmit={onSubmit}>
           <label className="grid gap-1">
             <span className="text-sm">Name *</span>
             <input name="name" required className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2" />
@@ -309,48 +350,58 @@ export default function IndividualRegistrationPage() {
                 setSelectedBarangay("");
                 setAddressError("");
               }}
-              className="rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-amber-100 [color-scheme:dark]"
+              className="address-location-select rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-amber-100 [color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-amber-300/40"
             >
               <option value="">Select location (Leyte/Cebu)</option>
               <option value="Leyte">Leyte</option>
               <option value="Cebu">Cebu</option>
             </select>
 
-            <input
+            <select
               required
               value={selectedMunicipality}
               onChange={(event) => {
-                setSelectedMunicipality(event.target.value);
+                const nextMunicipality = event.target.value;
+                const matchedMunicipality = municipalityOptions.find((item) => item.name === nextMunicipality);
+                setSelectedMunicipality(nextMunicipality);
+                setSelectedMunicipalityCode(matchedMunicipality?.code ?? "");
                 setSelectedBarangayCode("");
                 setSelectedBarangay("");
               }}
-              list="municipality-options-individual"
-              placeholder={isLoadingMunicipalities ? "Loading municipalities..." : "Search or type municipality"}
-              disabled={!selectedLocation}
-              className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 disabled:opacity-60"
-            />
-
-            <datalist id="municipality-options-individual">
+              disabled={!selectedLocation || isLoadingMunicipalities}
+              className="address-option-select rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-amber-100 [color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-amber-300/40 disabled:opacity-60"
+            >
+              <option value="" disabled>
+                {isLoadingMunicipalities ? "Loading municipalities..." : "Select municipality"}
+              </option>
               {municipalityOptions.map((municipality) => (
-                <option key={municipality.code} value={municipality.name} />
+                <option key={municipality.code} value={municipality.name}>
+                  {municipality.name}
+                </option>
               ))}
-            </datalist>
+            </select>
 
-            <input
+            <select
               required
               value={selectedBarangay}
-              onChange={(event) => setSelectedBarangay(event.target.value)}
-              list="barangay-options-individual"
-              placeholder={isLoadingBarangays ? "Loading barangays..." : "Search or type barangay"}
-              disabled={!selectedLocation || !selectedMunicipalityCode}
-              className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 disabled:opacity-60"
-            />
-
-            <datalist id="barangay-options-individual">
+              onChange={(event) => {
+                const nextBarangay = event.target.value;
+                const matchedBarangay = barangayOptions.find((item) => item.name === nextBarangay);
+                setSelectedBarangay(nextBarangay);
+                setSelectedBarangayCode(matchedBarangay?.code ?? "");
+              }}
+              disabled={!selectedLocation || !selectedMunicipalityCode || isLoadingBarangays}
+              className="address-option-select rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-amber-100 [color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-amber-300/40 disabled:opacity-60"
+            >
+              <option value="" disabled>
+                {isLoadingBarangays ? "Loading barangays..." : "Select barangay"}
+              </option>
               {barangayOptions.map((barangay) => (
-                <option key={barangay.code} value={barangay.name} />
+                <option key={barangay.code} value={barangay.name}>
+                  {barangay.name}
+                </option>
               ))}
-            </datalist>
+            </select>
 
             <input
               value={addressDetails}
@@ -406,8 +457,18 @@ export default function IndividualRegistrationPage() {
 
         <style jsx global>{`
           select[name="ministry"],
-          select[name="ministry"] option {
+          select[name="ministry"] option,
+          select.address-location-select,
+          select.address-location-select option,
+          select.address-option-select,
+          select.address-option-select option {
             background-color: #020617;
+            color: #fde68a;
+          }
+
+          select.address-location-select option:checked,
+          select.address-option-select option:checked {
+            background-color: #0f172a;
             color: #fde68a;
           }
         `}</style>
@@ -431,6 +492,65 @@ export default function IndividualRegistrationPage() {
             >
               Done
             </button>
+          </div>
+        </div>
+      ) : null}
+
+      {showConfirmModal && pendingPayload ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-2xl border border-amber-100/30 bg-slate-900 p-5 shadow-[0_18px_50px_rgba(3,8,20,0.55)] sm:p-6">
+            <h2 className="m-0 text-xl font-bold text-amber-100">Please Confirm Your Details</h2>
+            <p className="mt-2 text-sm text-amber-200">Review your information before final submission.</p>
+
+            <dl className="mt-4 grid gap-2 rounded-xl border border-amber-100/20 bg-slate-950/35 p-3 text-sm">
+              <div>
+                <dt className="font-semibold text-amber-300">Conference</dt>
+                <dd className="m-0 text-amber-100">{pendingPayload.conference === "cebu" ? "Cebu" : "Leyte"}</dd>
+              </div>
+              <div>
+                <dt className="font-semibold text-amber-300">Name</dt>
+                <dd className="m-0 text-amber-100">{pendingPayload.name}</dd>
+              </div>
+              <div>
+                <dt className="font-semibold text-amber-300">Church</dt>
+                <dd className="m-0 text-amber-100">{pendingPayload.church}</dd>
+              </div>
+              <div>
+                <dt className="font-semibold text-amber-300">Ministry</dt>
+                <dd className="m-0 text-amber-100">{pendingPayload.ministry}</dd>
+              </div>
+              <div>
+                <dt className="font-semibold text-amber-300">Address</dt>
+                <dd className="m-0 text-amber-100">{pendingPayload.address}</dd>
+              </div>
+              <div>
+                <dt className="font-semibold text-amber-300">Local Church Pastor</dt>
+                <dd className="m-0 text-amber-100">{pendingPayload.localChurchPastor}</dd>
+              </div>
+              <div>
+                <dt className="font-semibold text-amber-300">Phone Number</dt>
+                <dd className="m-0 text-amber-100">{pendingPayload.phoneNumber}</dd>
+              </div>
+            </dl>
+
+            <div className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <button
+                type="button"
+                onClick={cancelRegistrationSubmission}
+                disabled={isSubmitting}
+                className="rounded-xl border border-amber-100/40 bg-slate-900/70 px-4 py-2.5 text-sm font-semibold text-amber-100 transition hover:bg-slate-800 disabled:opacity-70"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmRegistrationSubmission}
+                disabled={isSubmitting}
+                className="rounded-xl bg-[linear-gradient(110deg,#f2be73,#d58147)] px-4 py-2.5 text-sm font-extrabold text-rose-950 disabled:opacity-70"
+              >
+                {isSubmitting ? "Submitting..." : "Confirm and Submit"}
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

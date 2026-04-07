@@ -1,5 +1,5 @@
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
-const bannerImage = `${supabaseUrl}/storage/v1/object/public/assets/Empowered_With_Purpose.jpg`;
+const bannerImage = `${supabaseUrl}/storage/v1/object/public/assets/LEYTE_Empowered_With_Purpose.jpg`;
 const churchLogo = `${supabaseUrl}/storage/v1/object/public/assets/LOGO.png`;
 
 export default function Page() {
