@@ -6,6 +6,7 @@ create or replace view public.attendee_directory as
 select
   i.id as record_id,
   'individual'::text as registration_source,
+  i.conference,
   i.full_name as attendee_name,
   i.full_name as contact_person,
   i.church,
@@ -21,6 +22,7 @@ union all
 select
   b.id as record_id,
   'bulk'::text as registration_source,
+  b.conference,
   trim(attendee_name) as attendee_name,
   b.contact_name as contact_person,
   b.church,

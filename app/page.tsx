@@ -1,47 +1,108 @@
-import { createClient } from "@supabase/supabase-js";
+"use client";
+
+import { useMemo, useState } from "react";
 import LiveSlotsIndicator from "./components/live-slots-indicator";
 
-export const dynamic = "force-dynamic";
-export const revalidate = 0;
-
-const bannerImage =
-	"https://oilbgqmzxltdrksiypfi.supabase.co/storage/v1/object/public/Logo/assets/Empowered_With_Purpose.jpg";
 const churchLogo =
 	"https://oilbgqmzxltdrksiypfi.supabase.co/storage/v1/object/public/Logo/assets/LOGO.png";
+const imageVersion = "20260408";
 
-const TOTAL_SLOTS = 100;
+type ConferenceKey = "leyte" | "cebu";
 
-async function getAttendeesCount() {
-	const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-	const supabaseKey =
-		process.env.SUPABASE_SERVICE_ROLE_KEY ??
-		process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
-		process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY;
+type ConferenceConfig = {
+	key: ConferenceKey;
+	label: string;
+	bannerImage: string;
+	registrationTitle: string;
+	totalSlots: number;
+	emailSubject: string;
+};
 
-	if (!supabaseUrl || !supabaseKey) {
-		return 0;
+const conferenceConfigs: Record<ConferenceKey, ConferenceConfig> = {
+	leyte: {
+		key: "leyte",
+		label: "Leyte Conference",
+		bannerImage:
+			`https://oilbgqmzxltdrksiypfi.supabase.co/storage/v1/object/public/Logo/assets/LEYTE_Empowered_With_Purpose.png?v=${imageVersion}`,
+		registrationTitle: "REGISTRATION FORM: LEYTE CHRISTIAN LEADERSHIP CONFERENCE 2026",
+		totalSlots: 100,
+		emailSubject: "Leyte Christian Leadership Conference 2026 Inquiry",
+	},
+	cebu: {
+		key: "cebu",
+		label: "Cebu Conference",
+		bannerImage:
+			`https://oilbgqmzxltdrksiypfi.supabase.co/storage/v1/object/public/Logo/assets/CEBU_Empowered_With_Purpose.png?v=${imageVersion}`,
+		registrationTitle: "REGISTRATION FORM: CEBU CHRISTIAN LEADERSHIP CONFERENCE 2026",
+		totalSlots: 150,
+		emailSubject: "Cebu Christian Leadership Conference 2026 Inquiry",
+	},
+};
+
+export default function Page() {
+	const [selectedConference, setSelectedConference] = useState<ConferenceKey>("leyte");
+	const [pendingConference, setPendingConference] = useState<ConferenceKey | null>(null);
+	const [isSwitchingConference, setIsSwitchingConference] = useState(false);
+
+	const conference = conferenceConfigs[selectedConference];
+	const conferenceQuery = useMemo(() => `conference=${conference.key}`, [conference.key]);
+
+	function onConferenceSelect(nextConference: ConferenceKey) {
+		if (nextConference === selectedConference) {
+			return;
+		}
+
+		setPendingConference(nextConference);
 	}
 
-	const supabase = createClient(supabaseUrl, supabaseKey, {
-		auth: { autoRefreshToken: false, persistSession: false },
-	});
-
-	const [{ count: individualCount, error: individualError }, { data: bulkRows, error: bulkError }] = await Promise.all([
-		supabase.from("individual_registrations").select("id", { count: "exact", head: true }),
-		supabase.from("bulk_registrations").select("attendee_count").limit(5000),
-	]);
-
-	if (individualError || bulkError) {
-		return 0;
+	function confirmConferenceSwitch() {
+		if (!pendingConference) return;
+		setIsSwitchingConference(true);
+		window.setTimeout(() => {
+			setSelectedConference(pendingConference);
+			setIsSwitchingConference(false);
+		}, 220);
+		setPendingConference(null);
 	}
 
-	const bulkAttendees = (bulkRows ?? []).reduce((sum, row) => sum + Number(row.attendee_count ?? 0), 0);
-	return Number(individualCount ?? 0) + bulkAttendees;
-}
+	function cancelConferenceSwitch() {
+		setPendingConference(null);
+	}
 
-export default async function Page() {
-	const attendeesCount = await getAttendeesCount();
-	const availableSlots = Math.max(TOTAL_SLOTS - attendeesCount, 0);
+	function openEmail(event: React.MouseEvent<HTMLAnchorElement>) {
+		event.preventDefault();
+
+		const to = "gambepsalm50@gmail.com";
+		const encodedSubject = encodeURIComponent(conference.emailSubject);
+		const gmailWebComposeUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${to}&su=${encodedSubject}`;
+		const gmailAppUrl = `googlegmail://co?to=${to}&subject=${encodedSubject}`;
+		const mailToUrl = `mailto:${to}?subject=${encodedSubject}`;
+
+		const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+
+		if (!isMobile) {
+			window.open(gmailWebComposeUrl, "_blank", "noopener,noreferrer");
+			return;
+		}
+
+		const fallbackTimeout = window.setTimeout(() => {
+			window.location.href = mailToUrl;
+		}, 900);
+
+		const clearFallback = () => {
+			window.clearTimeout(fallbackTimeout);
+			document.removeEventListener("visibilitychange", clearOnHidden);
+		};
+
+		const clearOnHidden = () => {
+			if (document.visibilityState === "hidden") {
+				clearFallback();
+			}
+		};
+
+		document.addEventListener("visibilitychange", clearOnHidden);
+		window.location.href = gmailAppUrl;
+	}
 
 	return (
 		<main className="relative h-screen overflow-hidden bg-[radial-gradient(circle_at_15%_20%,rgba(207,103,54,0.4),transparent_35%),radial-gradient(circle_at_85%_15%,rgba(255,207,122,0.22),transparent_32%),linear-gradient(130deg,#331a1c_0%,#5c2f2d_28%,#1f2942_72%,#142032_100%)] px-3 py-3 sm:px-4 sm:py-4">
@@ -60,15 +121,50 @@ export default async function Page() {
 				className="relative z-10 mx-auto grid h-full w-full max-w-[1360px] animate-[fade-up_700ms_ease-out] content-center place-items-center gap-4 lg:grid-cols-[minmax(0,716px)_minmax(0,620px)] lg:gap-0"
 				aria-label="Event registration landing page"
 			>
-				<article className="aspect-square w-full max-w-[min(716px,calc(100vh-2rem))] overflow-hidden rounded-3xl border border-amber-100/35 shadow-[0_18px_45px_rgba(3,8,20,0.45)] lg:max-w-none lg:rounded-r-none">
+				<article className="relative aspect-square w-full max-w-[min(716px,calc(100vh-2rem))] overflow-hidden rounded-3xl border border-amber-100/35 shadow-[0_18px_45px_rgba(3,8,20,0.45)] lg:max-w-none lg:rounded-r-none">
 					<img
-						src={bannerImage}
+						src={conference.bannerImage}
 						alt="Empowered With Purpose event banner"
-						className="block h-full w-full object-contain"
+						className={`block h-full w-full object-contain transition-opacity duration-300 ease-out ${
+							isSwitchingConference ? "opacity-0" : "opacity-100"
+						}`}
 					/>
+
+					<div className="absolute inset-x-0 bottom-0 flex justify-center bg-gradient-to-t from-black/70 via-black/35 to-transparent px-3 pb-5 pt-3 sm:px-4 sm:pb-8 sm:pt-4">
+						<div className="grid w-full max-w-[420px] grid-cols-2 gap-2 rounded-xl border border-amber-100/35 bg-black/35 p-2 backdrop-blur-sm">
+							<button
+								type="button"
+								onClick={() => onConferenceSelect("leyte")}
+								disabled={isSwitchingConference}
+								className={`rounded-lg px-3 py-2.5 text-sm font-extrabold uppercase tracking-[0.045em] transition sm:text-base ${
+									selectedConference === "leyte"
+										? "bg-amber-100 text-rose-950 ring-2 ring-amber-200/80"
+										: "border border-amber-200/35 bg-slate-900/55 text-amber-100 hover:bg-slate-800"
+								}`}
+							>
+								Leyte Conference
+							</button>
+							<button
+								type="button"
+								onClick={() => onConferenceSelect("cebu")}
+								disabled={isSwitchingConference}
+								className={`rounded-lg px-3 py-2.5 text-sm font-extrabold uppercase tracking-[0.045em] transition sm:text-base ${
+									selectedConference === "cebu"
+										? "bg-amber-100 text-rose-950 ring-2 ring-amber-200/80"
+										: "border border-amber-200/35 bg-slate-900/55 text-amber-100 hover:bg-slate-800"
+								}`}
+							>
+								Cebu Conference
+							</button>
+						</div>
+					</div>
 				</article>
 
-				<article className="h-[min(716px,calc(100vh-2rem))] w-full max-w-[620px] overflow-y-auto rounded-3xl border border-amber-100/20 bg-[linear-gradient(170deg,rgba(48,23,24,0.86),rgba(20,31,56,0.88))] shadow-[0_16px_40px_rgba(5,13,26,0.45)] lg:rounded-l-none">
+				<article
+					className={`h-[min(716px,calc(100vh-2rem))] w-full max-w-[620px] overflow-y-auto rounded-3xl border border-amber-100/20 bg-[linear-gradient(170deg,rgba(48,23,24,0.86),rgba(20,31,56,0.88))] shadow-[0_16px_40px_rgba(5,13,26,0.45)] transition-all duration-300 ease-out lg:rounded-l-none ${
+						isSwitchingConference ? "translate-y-1 opacity-80" : "translate-y-0 opacity-100"
+					}`}
+				>
 					<div className="flex h-full flex-col gap-3 p-5 text-amber-50 sm:gap-3.5 sm:p-6">
 						<div className="flex justify-center">
 							<img
@@ -81,7 +177,7 @@ export default async function Page() {
 							Joyful Sound Church - International
 						</p>
 						<h1 className="m-0 text-[clamp(1.25rem,1.9vw,1.7rem)] font-bold leading-tight tracking-[0.02em] text-amber-100">
-							REGISTRATION FORM: LEYTE CHRISTIAN LEADERSHIP CONFERENCE 2026
+							{conference.registrationTitle}
 						</h1>
 						<h2 className="m-0 text-[clamp(1rem,1.2vw,1.1rem)] font-semibold tracking-[0.06em] text-amber-300">
 							THEME: EMPOWERED WITH PURPOSE
@@ -99,9 +195,8 @@ export default async function Page() {
 								<div className="space-y-1.5 rounded-lg border border-amber-200/20 bg-black/10 p-2">
 									<p className="m-0 font-medium text-amber-200">Email Address</p>
 									<a
-										href="https://mail.google.com/mail/?view=cm&fs=1&to=gambepsalm50@gmail.com&su=Leyte%20Christian%20Leadership%20Conference%202026%20Inquiry"
-										target="_blank"
-										rel="noreferrer"
+										href={`https://mail.google.com/mail/?view=cm&fs=1&to=gambepsalm50@gmail.com&su=${encodeURIComponent(conference.emailSubject)}`}
+										onClick={openEmail}
 										className="inline-block break-all font-semibold text-amber-200 underline underline-offset-2 transition hover:text-amber-100"
 									>
 										gambepsalm50@gmail.com
@@ -132,24 +227,62 @@ export default async function Page() {
 								</summary>
 								<div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
 									<a
-										href="/register/individual"
+										href={`/register/individual?${conferenceQuery}`}
 										className="rounded-lg border border-amber-100/70 bg-amber-100 px-3 py-2.5 text-center text-[0.95rem] font-bold text-rose-950 transition hover:-translate-y-0.5 hover:bg-amber-50"
 									>
 										Individual Registration
 									</a>
 									<a
-										href="/register/bulk"
+										href={`/register/bulk?${conferenceQuery}`}
 										className="rounded-lg border border-indigo-200/60 bg-indigo-900/85 px-3 py-2.5 text-center text-[0.95rem] font-bold text-amber-50 transition hover:-translate-y-0.5 hover:bg-indigo-800"
 									>
 										Bulk Registration
 									</a>
 								</div>
 							</details>
-							<LiveSlotsIndicator initialAvailableSlots={availableSlots} totalSlots={TOTAL_SLOTS} />
+							<LiveSlotsIndicator
+								initialAvailableSlots={conference.totalSlots}
+								totalSlots={conference.totalSlots}
+								conference={conference.key}
+							/>
 						</div>
 					</div>
 				</article>
 			</section>
+
+			{pendingConference ? (
+				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 px-4">
+					<div
+						role="dialog"
+						aria-modal="true"
+						aria-label="Confirm conference selection"
+						className="w-full max-w-md rounded-2xl border border-amber-100/30 bg-[linear-gradient(150deg,rgba(25,18,20,0.96),rgba(20,36,54,0.96))] p-5 text-amber-50 shadow-[0_20px_45px_rgba(0,0,0,0.45)]"
+					>
+						<h3 className="m-0 text-xl font-extrabold uppercase tracking-[0.04em] text-amber-100">
+							Switch to {pendingConference === "cebu" ? "Cebu Conference" : "Leyte Conference"}?
+						</h3>
+						<p className="mb-0 mt-2 text-sm leading-relaxed text-amber-200">
+							You are about to register in {pendingConference === "cebu" ? "Cebu Conference" : "Leyte Conference"}. Do you want to continue?
+						</p>
+						<div className="mt-4 flex justify-end gap-2">
+							<button
+								type="button"
+								onClick={cancelConferenceSwitch}
+								className="rounded-lg border border-amber-100/35 bg-slate-900/60 px-4 py-2 text-sm font-semibold text-amber-100 transition hover:bg-slate-800"
+							>
+								Cancel
+							</button>
+							<button
+								type="button"
+								onClick={confirmConferenceSwitch}
+								className="rounded-lg bg-amber-100 px-4 py-2 text-sm font-bold text-rose-950 transition hover:bg-amber-50"
+							>
+								Continue
+							</button>
+						</div>
+					</div>
+				</div>
+			) : null}
 		</main>
 	);
 }

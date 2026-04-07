@@ -1,34 +1,58 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 type LiveSlotsIndicatorProps = {
   initialAvailableSlots: number;
   totalSlots: number;
+  conference: "leyte" | "cebu";
 };
 
 export default function LiveSlotsIndicator({
   initialAvailableSlots,
   totalSlots,
+  conference,
 }: LiveSlotsIndicatorProps) {
   const [availableSlots, setAvailableSlots] = useState(initialAvailableSlots);
+  const slotsCacheRef = useRef<Record<"leyte" | "cebu", number>>({
+    leyte: initialAvailableSlots,
+    cebu: initialAvailableSlots,
+  });
 
   const refreshSlots = useCallback(async () => {
     try {
-      const response = await fetch("/api/registrations?mode=slots", {
+      const response = await fetch(`/api/registrations?mode=slots&conference=${conference}`, {
         method: "GET",
         cache: "no-store",
       });
 
       if (!response.ok) return;
 
-      const data = (await response.json()) as { attendeesCount?: number };
+      const data = (await response.json()) as { availableSlots?: number; attendeesCount?: number };
+      if (typeof data.availableSlots === "number") {
+        const nextSlots = Math.max(data.availableSlots, 0);
+        slotsCacheRef.current[conference] = nextSlots;
+        setAvailableSlots(nextSlots);
+        return;
+      }
+
       const attendeesCount = Number(data.attendeesCount ?? 0);
-      setAvailableSlots(Math.max(totalSlots - attendeesCount, 0));
+      const nextSlots = Math.max(totalSlots - attendeesCount, 0);
+      slotsCacheRef.current[conference] = nextSlots;
+      setAvailableSlots(nextSlots);
     } catch {
-      // Keep last known value when refresh fails.
+      // Keep last known value on refresh error.
     }
-  }, [totalSlots]);
+  }, [conference, totalSlots]);
+
+  useEffect(() => {
+    const cached = slotsCacheRef.current[conference];
+    if (typeof cached === "number") {
+      setAvailableSlots(cached);
+    }
+
+    void refreshSlots();
+  }, [conference, refreshSlots]);
 
   useEffect(() => {
     const intervalId = window.setInterval(refreshSlots, 5000);

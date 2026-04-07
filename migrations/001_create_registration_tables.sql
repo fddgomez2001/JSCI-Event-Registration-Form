@@ -11,6 +11,7 @@ create table if not exists public.individual_registrations (
   address text not null,
   local_church_pastor text not null,
   phone_number text not null,
+  conference text not null default 'leyte' check (conference in ('leyte', 'cebu')),
   created_at timestamptz not null default now()
 );
 
@@ -24,6 +25,7 @@ create table if not exists public.bulk_registrations (
   phone_number text not null,
   attendee_count integer not null check (attendee_count > 0),
   attendee_names text not null,
+  conference text not null default 'leyte' check (conference in ('leyte', 'cebu')),
   created_at timestamptz not null default now()
 );
 

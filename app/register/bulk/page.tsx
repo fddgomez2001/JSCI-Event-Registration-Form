@@ -17,6 +17,7 @@ type RegistrationMode = "manual" | "excel" | "image";
 type LeadDetails = {
   contactName: string;
   church: string;
+  ministry: string;
   address: string;
   localChurchPastor: string;
   phoneNumber: string;
@@ -82,6 +83,19 @@ type CascadingAddressFieldProps = {
   value: string;
   onChange: (address: string) => void;
   idPrefix: string;
+};
+
+type BulkSubmitMode = "manual" | "excel" | "image";
+
+type BulkConfirmationData = {
+  submitMode: BulkSubmitMode;
+  contactName: string;
+  church: string;
+  ministry: string;
+  address: string;
+  localChurchPastor: string;
+  phoneNumber: string;
+  attendees: string[];
 };
 
 const PSGC_BASE_URL = "https://psgc.gitlab.io/api";
@@ -247,48 +261,58 @@ function CascadingAddressField({ value, onChange, idPrefix }: CascadingAddressFi
           setSelectedBarangay("");
           setAddressError("");
         }}
-        className="rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-amber-100 [color-scheme:dark]"
+        className="address-location-select rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-amber-100 [color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-amber-300/40"
       >
         <option value="">Select location (Leyte/Cebu)</option>
         <option value="Leyte">Leyte</option>
         <option value="Cebu">Cebu</option>
       </select>
 
-      <input
+      <select
         required
         value={selectedMunicipality}
         onChange={(event) => {
-          setSelectedMunicipality(event.target.value);
+          const nextMunicipality = event.target.value;
+          const matchedMunicipality = municipalityOptions.find((item) => item.name === nextMunicipality);
+          setSelectedMunicipality(nextMunicipality);
+          setSelectedMunicipalityCode(matchedMunicipality?.code ?? "");
           setSelectedBarangayCode("");
           setSelectedBarangay("");
         }}
-        list={`${idPrefix}-municipality-options`}
-        placeholder={isLoadingMunicipalities ? "Loading municipalities..." : "Search or type municipality"}
-        disabled={!selectedLocation}
-        className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 disabled:opacity-60"
-      />
-
-      <datalist id={`${idPrefix}-municipality-options`}>
+        disabled={!selectedLocation || isLoadingMunicipalities}
+        className="address-option-select rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-amber-100 [color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-amber-300/40 disabled:opacity-60"
+      >
+        <option value="" disabled>
+          {isLoadingMunicipalities ? "Loading municipalities..." : "Select municipality"}
+        </option>
         {municipalityOptions.map((municipality) => (
-          <option key={municipality.code} value={municipality.name} />
+          <option key={municipality.code} value={municipality.name}>
+            {municipality.name}
+          </option>
         ))}
-      </datalist>
+      </select>
 
-      <input
+      <select
         required
         value={selectedBarangay}
-        onChange={(event) => setSelectedBarangay(event.target.value)}
-        list={`${idPrefix}-barangay-options`}
-        placeholder={isLoadingBarangays ? "Loading barangays..." : "Search or type barangay"}
-        disabled={!selectedLocation || !selectedMunicipalityCode}
-        className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 disabled:opacity-60"
-      />
-
-      <datalist id={`${idPrefix}-barangay-options`}>
+        onChange={(event) => {
+          const nextBarangay = event.target.value;
+          const matchedBarangay = barangayOptions.find((item) => item.name === nextBarangay);
+          setSelectedBarangay(nextBarangay);
+          setSelectedBarangayCode(matchedBarangay?.code ?? "");
+        }}
+        disabled={!selectedLocation || !selectedMunicipalityCode || isLoadingBarangays}
+        className="address-option-select rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-amber-100 [color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-amber-300/40 disabled:opacity-60"
+      >
+        <option value="" disabled>
+          {isLoadingBarangays ? "Loading barangays..." : "Select barangay"}
+        </option>
         {barangayOptions.map((barangay) => (
-          <option key={barangay.code} value={barangay.name} />
+          <option key={barangay.code} value={barangay.name}>
+            {barangay.name}
+          </option>
         ))}
-      </datalist>
+      </select>
 
       <input
         value={addressDetails}
@@ -564,6 +588,7 @@ function blankLeadDetails(): LeadDetails {
   return {
     contactName: "",
     church: "",
+    ministry: "",
     address: "",
     localChurchPastor: "",
     phoneNumber: "",
@@ -602,9 +627,22 @@ function blankImageLeadDetails(): ImageLeadDetails {
 }
 
 export default function BulkRegistrationPage() {
+  const [conference, setConference] = useState<"leyte" | "cebu">("leyte");
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const value = (params.get("conference") ?? "leyte").toLowerCase();
+    setConference(value === "cebu" ? "cebu" : "leyte");
+  }, []);
+  const conferenceLabel = conference === "cebu" ? "Cebu" : "Leyte";
+
   const [mode, setMode] = useState<RegistrationMode>("manual");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [status, setStatus] = useState<string>("");
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [pendingConfirmation, setPendingConfirmation] = useState<BulkConfirmationData | null>(null);
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [successMessage, setSuccessMessage] = useState("");
 
   const [importStatus, setImportStatus] = useState<string>("");
   const [showImportInstructions, setShowImportInstructions] = useState(false);
@@ -632,7 +670,7 @@ export default function BulkRegistrationPage() {
   useEffect(() => {
     async function loadChurchOptions() {
       try {
-        const response = await fetch("/api/registrations", { cache: "no-store" });
+        const response = await fetch(`/api/registrations?conference=${conference}`, { cache: "no-store" });
         if (!response.ok) return;
 
         const data = (await response.json()) as { churches?: string[] };
@@ -644,7 +682,7 @@ export default function BulkRegistrationPage() {
     }
 
     void loadChurchOptions();
-  }, []);
+  }, [conference]);
 
   function updateExcelLeadDetails(field: keyof LeadDetails, value: string) {
     setExcelLeadDetails((prev) => ({ ...prev, [field]: value }));
@@ -869,7 +907,9 @@ export default function BulkRegistrationPage() {
     }
   }
 
-  async function registerImportedData() {
+  async function submitImportedData() {
+    if (!pendingConfirmation) return;
+
     if (!importedRows.length) {
       setImportStatus("Please import data first.");
       return;
@@ -889,7 +929,7 @@ export default function BulkRegistrationPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         type: "bulkImport",
-        payload: { rows: importedRows, leadDetails: excelLeadDetails },
+        payload: { rows: importedRows, leadDetails: excelLeadDetails, conference },
       }),
     });
 
@@ -912,10 +952,41 @@ export default function BulkRegistrationPage() {
     );
     setImportedRows([]);
     setDuplicateRows([]);
+    setShowConfirmModal(false);
+    setPendingConfirmation(null);
+    setSuccessMessage("Bulk registration submitted successfully.");
+    setShowSuccessModal(true);
     setIsSubmitting(false);
   }
 
-  async function onManualSubmit() {
+  function registerImportedData() {
+    if (!importedRows.length) {
+      setImportStatus("Please import data first.");
+      return;
+    }
+
+    const invalid = importedRows.find((row) => Object.values(row).some((value) => !value.trim()));
+    if (invalid) {
+      setImportStatus("Please complete all editable cells before registering imported data.");
+      return;
+    }
+
+    setPendingConfirmation({
+      submitMode: "excel",
+      contactName: excelLeadDetails.contactName,
+      church: excelLeadDetails.church,
+      ministry: excelLeadDetails.ministry,
+      address: excelLeadDetails.address,
+      localChurchPastor: excelLeadDetails.localChurchPastor,
+      phoneNumber: excelLeadDetails.phoneNumber,
+      attendees: importedRows.map((row) => row.fullName),
+    });
+    setShowConfirmModal(true);
+  }
+
+  async function submitManualData() {
+    if (!pendingConfirmation) return;
+
     const missingContactField = Object.entries(manualContactDetails).find(([, value]) => !value.trim());
     if (missingContactField) {
       setStatus("Please complete all Contact Person fields.");
@@ -954,6 +1025,8 @@ export default function BulkRegistrationPage() {
       phoneNumber: manualContactDetails.phoneNumber,
       attendeeCount: String(manualRows.length),
       attendeeNames: manualRows.map((row) => row.fullName).join("\n"),
+      attendeeRows: manualRows,
+      conference,
     };
 
     const response = await fetch("/api/registrations", {
@@ -978,8 +1051,52 @@ export default function BulkRegistrationPage() {
     setManualRows([]);
     setManualAttendeeDraft(blankAttendeeDraft());
     setLastDeletedManualRow(null);
+    setShowConfirmModal(false);
+    setPendingConfirmation(null);
     setStatus("Bulk registration submitted successfully.");
+    setSuccessMessage("Bulk registration submitted successfully.");
+    setShowSuccessModal(true);
     setIsSubmitting(false);
+  }
+
+  function onManualSubmit() {
+    const missingContactField = Object.entries(manualContactDetails).find(([, value]) => !value.trim());
+    if (missingContactField) {
+      setStatus("Please complete all Contact Person fields.");
+      return;
+    }
+
+    if (!manualRows.length) {
+      setStatus("Please add at least one attendee.");
+      return;
+    }
+
+    const invalidRow = manualRows.find(
+      (row) =>
+        !row.fullName.trim() ||
+        !row.phoneNumber.trim() ||
+        !row.ministry.trim() ||
+        !row.church.trim() ||
+        !row.address.trim() ||
+        !row.localChurchPastor.trim(),
+    );
+
+    if (invalidRow) {
+      setStatus("Please complete all attendee row fields in Preview and Edit before submitting.");
+      return;
+    }
+
+    setPendingConfirmation({
+      submitMode: "manual",
+      contactName: manualContactDetails.contactName,
+      church: manualContactDetails.church,
+      ministry: manualContactDetails.ministry,
+      address: manualContactDetails.address,
+      localChurchPastor: manualContactDetails.localChurchPastor,
+      phoneNumber: manualContactDetails.phoneNumber,
+      attendees: manualRows.map((row) => row.fullName),
+    });
+    setShowConfirmModal(true);
   }
 
   async function onImageUpload(event: ChangeEvent<HTMLInputElement>) {
@@ -1038,7 +1155,9 @@ export default function BulkRegistrationPage() {
     }
   }
 
-  async function registerImageData() {
+  async function submitImageData() {
+    if (!pendingConfirmation) return;
+
     if (!imageRows.length) {
       setImageStatus("Please upload an image first.");
       return;
@@ -1058,7 +1177,7 @@ export default function BulkRegistrationPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         type: "bulkImport",
-        payload: { rows: imageRows, leadDetails: imageLeadDetails },
+        payload: { rows: imageRows, leadDetails: imageLeadDetails, conference },
       }),
     });
 
@@ -1080,7 +1199,57 @@ export default function BulkRegistrationPage() {
     );
     setImageRows([]);
     setLastDeletedImageRow(null);
+    setShowConfirmModal(false);
+    setPendingConfirmation(null);
+    setSuccessMessage("Bulk registration submitted successfully.");
+    setShowSuccessModal(true);
     setIsSubmitting(false);
+  }
+
+  function registerImageData() {
+    if (!imageRows.length) {
+      setImageStatus("Please upload an image first.");
+      return;
+    }
+
+    const invalid = imageRows.find((row) => Object.values(row).some((value) => !String(value).trim()));
+    if (invalid) {
+      setImageStatus("Please complete all row fields in Image Preview and Edit before registering.");
+      return;
+    }
+
+    setPendingConfirmation({
+      submitMode: "image",
+      contactName: imageLeadDetails.contactName,
+      church: imageLeadDetails.church,
+      ministry: imageLeadDetails.ministry,
+      address: imageLeadDetails.address,
+      localChurchPastor: imageLeadDetails.localChurchPastor,
+      phoneNumber: imageLeadDetails.phoneNumber,
+      attendees: imageRows.map((row) => row.fullName),
+    });
+    setShowConfirmModal(true);
+  }
+
+  async function confirmBulkSubmission() {
+    if (!pendingConfirmation || isSubmitting) return;
+
+    if (pendingConfirmation.submitMode === "manual") {
+      await submitManualData();
+      return;
+    }
+
+    if (pendingConfirmation.submitMode === "excel") {
+      await submitImportedData();
+      return;
+    }
+
+    await submitImageData();
+  }
+
+  function cancelBulkConfirmation() {
+    setShowConfirmModal(false);
+    setPendingConfirmation(null);
   }
 
   return (
@@ -1090,13 +1259,16 @@ export default function BulkRegistrationPage() {
           <a href="/" className="text-amber-300 underline underline-offset-2">
             Back to Landing Page
           </a>
-          <a href="/register/individual" className="text-amber-200 underline underline-offset-2 hover:text-amber-100">
+          <a href={`/register/individual?conference=${conference}`} className="text-amber-200 underline underline-offset-2 hover:text-amber-100">
             Switch to Individual Registration
           </a>
         </div>
 
         <h1 className="mt-3 text-2xl font-bold text-amber-100">Bulk Registration</h1>
-        <p className="mb-4 mt-1 text-sm text-amber-200">All fields are required.</p>
+        <p className="mb-1 mt-1 text-sm text-amber-200">All fields are required.</p>
+        <p className="mb-4 text-xs font-semibold uppercase tracking-[0.08em] text-amber-300">
+          Conference: {conferenceLabel}
+        </p>
 
         <div className="mb-5 grid gap-2 sm:grid-cols-3">
           <button
@@ -1443,6 +1615,21 @@ export default function BulkRegistrationPage() {
                           className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 text-sm"
                         />
                       </label>
+                      <label className="grid gap-1">
+                        <span className="text-xs">Ministry *</span>
+                        <select
+                          value={excelLeadDetails.ministry}
+                          onChange={(event) => updateExcelLeadDetails("ministry", event.target.value)}
+                          className="rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-sm text-amber-100 [color-scheme:dark]"
+                        >
+                          <option value="">Select ministry</option>
+                          {ministryOptions.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
                       <CascadingAddressField
                         idPrefix="excel-lead"
                         value={excelLeadDetails.address}
@@ -1714,6 +1901,21 @@ export default function BulkRegistrationPage() {
                   </div>
 
                   <div className="mt-3">
+                      <label className="grid gap-1">
+                        <span className="text-xs">Ministry *</span>
+                        <select
+                          value={excelLeadDetails.ministry}
+                          onChange={(event) => updateExcelLeadDetails("ministry", event.target.value)}
+                          className="rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-sm text-amber-100 [color-scheme:dark]"
+                        >
+                          <option value="">Select ministry</option>
+                          {ministryOptions.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
                     <label
                       className={`inline-block rounded-lg border px-3 py-2 text-sm font-semibold ${
                         isImageLeadComplete
@@ -1905,7 +2107,96 @@ export default function BulkRegistrationPage() {
           </div>
         ) : null}
 
+        {showConfirmModal && pendingConfirmation ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 px-4" role="dialog" aria-modal="true">
+            <div className="w-full max-w-2xl rounded-2xl border border-amber-100/25 bg-slate-900 p-4 text-amber-100 shadow-2xl sm:p-5">
+              <h3 className="text-lg font-bold text-amber-100">Confirm Bulk Registration Details</h3>
+              <p className="mt-1 text-sm text-amber-200">Please review Contact Person and attendee list before submitting.</p>
+
+              <div className="mt-3 rounded-lg border border-amber-100/20 bg-black/15 p-3 text-sm">
+                <p className="m-0"><span className="font-semibold text-amber-300">Conference:</span> {conferenceLabel}</p>
+                <p className="m-0 mt-1"><span className="font-semibold text-amber-300">Contact Person:</span> {pendingConfirmation.contactName}</p>
+                <p className="m-0 mt-1"><span className="font-semibold text-amber-300">Church:</span> {pendingConfirmation.church}</p>
+                <p className="m-0 mt-1"><span className="font-semibold text-amber-300">Ministry:</span> {pendingConfirmation.ministry || "N/A"}</p>
+                <p className="m-0 mt-1"><span className="font-semibold text-amber-300">Address:</span> {pendingConfirmation.address}</p>
+                <p className="m-0 mt-1"><span className="font-semibold text-amber-300">Local Church Pastor:</span> {pendingConfirmation.localChurchPastor}</p>
+                <p className="m-0 mt-1"><span className="font-semibold text-amber-300">Phone Number:</span> {pendingConfirmation.phoneNumber}</p>
+              </div>
+
+              <div className="mt-3 rounded-lg border border-amber-100/20 bg-black/15 p-3">
+                <p className="m-0 text-sm font-semibold text-amber-300">Attendees Added: {pendingConfirmation.attendees.length}</p>
+                <div className="mt-2 max-h-44 overflow-y-auto rounded-md border border-amber-100/15 bg-slate-950/40 p-2 text-sm">
+                  {pendingConfirmation.attendees.length ? (
+                    <ul className="m-0 list-disc space-y-1 pl-4 text-amber-100">
+                      {pendingConfirmation.attendees.map((attendee, index) => (
+                        <li key={`${attendee}-${index}`}>{attendee}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="m-0 text-amber-200">No attendees found.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-4 flex flex-wrap justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={cancelBulkConfirmation}
+                  disabled={isSubmitting}
+                  className="rounded-lg border border-amber-100/40 px-4 py-2 text-sm font-semibold text-amber-100 hover:bg-slate-800/70 disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmBulkSubmission}
+                  disabled={isSubmitting}
+                  className="rounded-lg bg-[linear-gradient(110deg,#f2be73,#d58147)] px-4 py-2 text-sm font-extrabold text-rose-950 disabled:opacity-60"
+                >
+                  {isSubmitting ? "Submitting..." : "Confirm"}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {showSuccessModal ? (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 px-4 backdrop-blur-sm">
+            <div className="w-full max-w-md rounded-2xl border border-amber-100/30 bg-slate-900 p-5 shadow-[0_18px_50px_rgba(3,8,20,0.55)] sm:p-6">
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-emerald-300/40 bg-emerald-500/20 text-xl text-emerald-200">
+                ✓
+              </div>
+              <h2 className="mt-3 text-center text-xl font-bold text-amber-100">Registration Successful</h2>
+              <p className="mt-2 text-center text-sm text-amber-200">{successMessage || "Bulk registration submitted successfully."}</p>
+
+              <button
+                type="button"
+                onClick={() => setShowSuccessModal(false)}
+                className="mt-5 w-full rounded-xl bg-[linear-gradient(110deg,#f2be73,#d58147)] px-4 py-2.5 text-sm font-extrabold text-rose-950"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        ) : null}
+
         {mode === "manual" && status ? <p className="mt-3 text-sm text-amber-200">{status}</p> : null}
+
+        <style jsx global>{`
+          select.address-location-select,
+          select.address-location-select option,
+          select.address-option-select,
+          select.address-option-select option {
+            background-color: #020617;
+            color: #fde68a;
+          }
+
+          select.address-location-select option:checked,
+          select.address-option-select option:checked {
+            background-color: #0f172a;
+            color: #fde68a;
+          }
+        `}</style>
       </section>
     </main>
   );
