@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+import { getAdminGateCookieName, getCookieValue, verifyAdminGateToken } from "../../../utils/admin/security";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -81,20 +82,102 @@ const adminCredentials = {
   password: "Admin@123!",
 };
 
+async function getConferenceAttendeeCount(supabase: any, conference: "leyte" | "cebu") {
+  const [{ count: individualCount, error: individualError }, { data: bulkRows, error: bulkError }] = await Promise.all([
+    (supabase as any)
+      .from("individual_registrations")
+      .select("id", { count: "exact", head: true })
+      .eq("conference", conference),
+    (supabase as any)
+      .from("bulk_registrations")
+      .select("attendee_count")
+      .eq("conference", conference)
+      .limit(5000),
+  ]);
+
+  if (individualError && (individualError as { code?: string }).code !== "PGRST205") {
+    return { error: individualError.message };
+  }
+
+  if (bulkError && (bulkError as { code?: string }).code !== "PGRST205") {
+    return { error: bulkError.message };
+  }
+
+  const individualAttendees = Number(individualCount ?? 0);
+  const bulkAttendees = (bulkRows ?? []).reduce(
+    (sum: number, row: { attendee_count?: number }) => sum + Number(row.attendee_count ?? 0),
+    0,
+  );
+
+  return { attendeesCount: individualAttendees + bulkAttendees };
+}
+
+async function ensureConferenceCapacity(
+  supabase: any,
+  conference: "leyte" | "cebu",
+  requestedSlots: number,
+) {
+  const totalSlots = conferenceTotals[conference];
+  const result = await getConferenceAttendeeCount(supabase, conference);
+
+  if ("error" in result) {
+    return { ok: false as const, status: 500, error: result.error };
+  }
+
+  const attendeesCount = result.attendeesCount;
+  const availableSlots = Math.max(totalSlots - attendeesCount, 0);
+
+  if (availableSlots <= 0) {
+    return {
+      ok: false as const,
+      status: 409,
+      error: `Registration is now closed for ${conference === "cebu" ? "Cebu" : "Leyte"}. Thank you for your overwhelming response.`,
+    };
+  }
+
+  if (requestedSlots > availableSlots) {
+    return {
+      ok: false as const,
+      status: 409,
+      error: `Only ${availableSlots} slot${availableSlots === 1 ? "" : "s"} left for ${conference === "cebu" ? "Cebu" : "Leyte"}. Please reduce attendees and try again.`,
+    };
+  }
+
+  return { ok: true as const };
+}
+
+function normalizePersonName(value: string) {
+  const cleaned = String(value ?? "").trim().replace(/\s+/g, " ");
+  if (!cleaned) return "";
+
+  const toTitlePart = (part: string) =>
+    part
+      .toLowerCase()
+      .split(/(['-])/)
+      .map((token) => {
+        if (token === "'" || token === "-") return token;
+        if (!token) return token;
+        return token.charAt(0).toUpperCase() + token.slice(1);
+      })
+      .join("");
+
+  return cleaned.split(" ").map(toTitlePart).join(" ");
+}
+
 function parseAttendeeNames(attendeeNames: string) {
   return attendeeNames
     .split(/\r?\n|,/)
-    .map((name) => name.trim())
+    .map((name) => normalizePersonName(name))
     .filter(Boolean);
 }
 
 function normalizeImportedRows(rows: ImportedRow[]) {
   return rows.map((row) => ({
-    fullName: String(row.fullName ?? "").trim(),
+    fullName: normalizePersonName(String(row.fullName ?? "")),
     church: String(row.church ?? "").trim(),
     ministry: String(row.ministry ?? "").trim(),
     address: String(row.address ?? "").trim(),
-    localChurchPastor: String(row.localChurchPastor ?? "").trim(),
+    localChurchPastor: normalizePersonName(String(row.localChurchPastor ?? "")),
     phoneNumber: String(row.phoneNumber ?? "").trim(),
   }));
 }
@@ -140,7 +223,9 @@ async function replaceBulkAttendees(
 function isAdminAuthorized(request: Request) {
   const username = request.headers.get("x-admin-username") ?? "";
   const password = request.headers.get("x-admin-password") ?? "";
-  return username === adminCredentials.username && password === adminCredentials.password;
+  const gateToken = getCookieValue(request.headers.get("cookie"), getAdminGateCookieName());
+  const hasGateAccess = verifyAdminGateToken(gateToken);
+  return username === adminCredentials.username && password === adminCredentials.password && hasGateAccess;
 }
 
 export async function GET(request: Request) {
@@ -443,11 +528,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "No rows found in import payload." }, { status: 400 });
     }
 
-    const contactName = String(leadDetails?.contactName ?? "").trim();
+    const contactName = normalizePersonName(String(leadDetails?.contactName ?? ""));
     const church = String(leadDetails?.church ?? "").trim();
     const ministry = String(leadDetails?.ministry ?? "").trim();
     const address = String(leadDetails?.address ?? "").trim();
-    const localChurchPastor = String(leadDetails?.localChurchPastor ?? "").trim();
+    const localChurchPastor = normalizePersonName(String(leadDetails?.localChurchPastor ?? ""));
     const phoneNumber = String(leadDetails?.phoneNumber ?? "").trim();
 
     if (!contactName || !church || !ministry || !address || !localChurchPastor || !phoneNumber) {
@@ -457,14 +542,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const normalizedRows = rows.map((row) => ({
-      fullName: String(row.fullName ?? "").trim(),
-      church: String(row.church ?? "").trim(),
-      ministry: String(row.ministry ?? "").trim(),
-      address: String(row.address ?? "").trim(),
-      localChurchPastor: String(row.localChurchPastor ?? "").trim(),
-      phoneNumber: String(row.phoneNumber ?? "").trim(),
-    }));
+    const normalizedRows = normalizeImportedRows(rows);
 
     const invalidRow = normalizedRows.find(
       (row) =>
@@ -493,6 +571,11 @@ export async function POST(request: Request) {
     const duplicateInFileCount = normalizedRows.length - dedupedRows.length;
 
     const attendeeNames = dedupedRows.map((row) => row.fullName);
+    const capacityCheck = await ensureConferenceCapacity(supabase, conference, attendeeNames.length);
+    if (!capacityCheck.ok) {
+      return NextResponse.json({ error: capacityCheck.error }, { status: capacityCheck.status });
+    }
+
     const { data: insertedBulkRow, error: insertBulkError } = await supabase
       .from("bulk_registrations")
       .insert({
@@ -555,12 +638,17 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: `${missing} is required.` }, { status: 400 });
     }
 
+    const capacityCheck = await ensureConferenceCapacity(supabase, conference, 1);
+    if (!capacityCheck.ok) {
+      return NextResponse.json({ error: capacityCheck.error }, { status: capacityCheck.status });
+    }
+
     const { error } = await supabase.from("individual_registrations").insert({
-      full_name: payload.name,
+      full_name: normalizePersonName(payload.name),
       church: payload.church,
       ministry: payload.ministry,
       address: payload.address,
-      local_church_pastor: payload.localChurchPastor,
+      local_church_pastor: normalizePersonName(payload.localChurchPastor),
       phone_number: payload.phoneNumber,
       conference,
     });
@@ -608,14 +696,20 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
+
+  const capacityCheck = await ensureConferenceCapacity(supabase, conference, attendeeNames.length);
+  if (!capacityCheck.ok) {
+    return NextResponse.json({ error: capacityCheck.error }, { status: capacityCheck.status });
+  }
+
   const { data: insertedBulkRow, error } = await supabase
     .from("bulk_registrations")
     .insert({
-      contact_name: payload.contactName,
+      contact_name: normalizePersonName(payload.contactName),
       church: payload.church,
       ministry: payload.ministry,
       address: payload.address,
-      local_church_pastor: payload.localChurchPastor,
+      local_church_pastor: normalizePersonName(payload.localChurchPastor),
       phone_number: payload.phoneNumber,
       attendee_count: attendeeNames.length,
       attendee_names: attendeeNames.join("\n"),
@@ -713,11 +807,11 @@ export async function PATCH(request: Request) {
     const { error } = await supabaseAdmin
       .from("individual_registrations")
       .update({
-        full_name: String(payload.name ?? "").trim(),
+        full_name: normalizePersonName(String(payload.name ?? "")),
         church: String(payload.church ?? "").trim(),
         ministry: String(payload.ministry ?? "").trim(),
         address: String(payload.address ?? "").trim(),
-        local_church_pastor: String(payload.localChurchPastor ?? "").trim(),
+        local_church_pastor: normalizePersonName(String(payload.localChurchPastor ?? "")),
         phone_number: String(payload.phoneNumber ?? "").trim(),
       })
       .eq("id", id);
@@ -773,11 +867,11 @@ export async function PATCH(request: Request) {
   const { error } = await supabaseAdmin
     .from("bulk_registrations")
     .update({
-      contact_name: String(payload.contactName ?? "").trim(),
+      contact_name: normalizePersonName(String(payload.contactName ?? "")),
       church: String(payload.church ?? "").trim(),
       ministry: String(payload.ministry ?? "").trim(),
       address: String(payload.address ?? "").trim(),
-      local_church_pastor: String(payload.localChurchPastor ?? "").trim(),
+      local_church_pastor: normalizePersonName(String(payload.localChurchPastor ?? "")),
       phone_number: String(payload.phoneNumber ?? "").trim(),
       attendee_count: attendeeNames.length,
       attendee_names: attendeeNames.join("\n"),
@@ -821,7 +915,11 @@ export async function PATCH(request: Request) {
       : [];
 
     linkedRows = attendeeNames.map((attendeeName, index) => {
-      const existing = existingRows[index] ?? existingRows.find((row) => String(row.attendee_name ?? "").trim() === attendeeName);
+      const existing =
+        existingRows[index] ??
+        existingRows.find(
+          (row) => normalizePersonName(String(row.attendee_name ?? "")) === normalizePersonName(attendeeName),
+        );
       return {
         bulk_registration_id: id,
         attendee_name: attendeeName,

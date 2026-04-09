@@ -203,7 +203,7 @@ export default function IndividualRegistrationPage() {
       church: church,
       ministry: String(formData.get("ministry") ?? ""),
       address: computedAddress,
-      localChurchPastor: String(formData.get("localChurchPastor") ?? ""),
+      localChurchPastor: `Pastor ${String(formData.get("localChurchPastorNameOnly") ?? "").trim()}`,
       phoneNumber: String(formData.get("phoneNumber") ?? ""),
       conference,
     };
@@ -261,16 +261,11 @@ export default function IndividualRegistrationPage() {
   return (
     <main className="min-h-screen bg-[linear-gradient(130deg,#331a1c_0%,#5c2f2d_30%,#1f2942_70%,#142032_100%)] px-4 py-8 md:flex md:items-center md:justify-center">
       <section className="mx-auto w-full max-w-2xl rounded-3xl border border-amber-100/30 bg-slate-900/80 p-5 text-amber-50 shadow-[0_18px_45px_rgba(3,8,20,0.45)] sm:p-7">
-        <div className="flex flex-wrap items-center gap-4 text-sm font-semibold">
-          <a href="/" className="text-amber-300 underline underline-offset-2">
-            Back to Landing Page
-          </a>
-          <a href={`/register/bulk?conference=${conference}`} className="text-amber-200 underline underline-offset-2 hover:text-amber-100">
-            Switch to Bulk Registration
-          </a>
+        <div className="mb-4 flex flex-wrap items-center gap-4 text-sm font-semibold">
+          <a href="/" className="text-amber-300 underline underline-offset-2">Back to Landing Page</a>
+          <a href="/register/bulk?conference=leyte" className="text-amber-200 underline underline-offset-2 hover:text-amber-100">Switch to Bulk Registration</a>
         </div>
-
-        <h1 className="mt-3 text-2xl font-bold text-amber-100">Individual Registration</h1>
+        <h1 className="mt-8 text-2xl font-bold text-amber-100 sm:mt-6">Individual Registration</h1>
         <p className="mb-1 mt-1 text-sm text-amber-200">All fields are required.</p>
         <p className="mb-4 text-xs font-semibold uppercase tracking-[0.08em] text-amber-300">
           Conference: {conferenceLabel}
@@ -278,8 +273,13 @@ export default function IndividualRegistrationPage() {
 
         <form ref={formRef} className="grid gap-3" onSubmit={onSubmit}>
           <label className="grid gap-1">
-            <span className="text-sm">Name *</span>
-            <input name="name" required className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2" />
+            <span className="text-sm">Full Name *</span>
+            <input 
+              name="name" 
+              required 
+              placeholder="e.g. Juan Dela Cruz"
+              className="w-full max-w-full rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 text-sm focus:border-amber-400/50 outline-none transition-all" 
+            />
           </label>
 
           <label className="grid gap-1">
@@ -288,7 +288,7 @@ export default function IndividualRegistrationPage() {
               <select
                 defaultValue=""
                 onChange={(event) => setChurch(event.target.value)}
-                className="rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-amber-100 [color-scheme:dark]"
+                className="w-full max-w-full rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-amber-100 [color-scheme:dark]"
               >
                 <option value="">Select saved church (optional)</option>
                 {churchOptions.map((option) => (
@@ -304,7 +304,7 @@ export default function IndividualRegistrationPage() {
               value={church}
               onChange={(event) => setChurch(event.target.value)}
               list="church-options-individual"
-              className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2"
+              className="w-full max-w-full rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2"
             />
           </label>
 
@@ -320,7 +320,7 @@ export default function IndividualRegistrationPage() {
               name="ministry"
               required
               defaultValue=""
-              className="rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-amber-100 [color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-amber-300/40"
+              className="w-full max-w-full rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-amber-100 [color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-amber-300/40"
             >
               <option value="" disabled>
                 Select ministry
@@ -350,7 +350,7 @@ export default function IndividualRegistrationPage() {
                 setSelectedBarangay("");
                 setAddressError("");
               }}
-              className="address-location-select rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-amber-100 [color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-amber-300/40"
+              className="address-location-select w-full max-w-full rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-amber-100 [color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-amber-300/40"
             >
               <option value="">Select location (Leyte/Cebu)</option>
               <option value="Leyte">Leyte</option>
@@ -369,7 +369,7 @@ export default function IndividualRegistrationPage() {
                 setSelectedBarangay("");
               }}
               disabled={!selectedLocation || isLoadingMunicipalities}
-              className="address-option-select rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-amber-100 [color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-amber-300/40 disabled:opacity-60"
+              className="address-option-select w-full max-w-full rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-amber-100 [color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-amber-300/40 disabled:opacity-60"
             >
               <option value="" disabled>
                 {isLoadingMunicipalities ? "Loading municipalities..." : "Select municipality"}
@@ -391,7 +391,7 @@ export default function IndividualRegistrationPage() {
                 setSelectedBarangayCode(matchedBarangay?.code ?? "");
               }}
               disabled={!selectedLocation || !selectedMunicipalityCode || isLoadingBarangays}
-              className="address-option-select rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-amber-100 [color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-amber-300/40 disabled:opacity-60"
+              className="address-option-select w-full max-w-full rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-amber-100 [color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-amber-300/40 disabled:opacity-60"
             >
               <option value="" disabled>
                 {isLoadingBarangays ? "Loading barangays..." : "Select barangay"}
@@ -407,7 +407,7 @@ export default function IndividualRegistrationPage() {
               value={addressDetails}
               onChange={(event) => setAddressDetails(event.target.value)}
               placeholder="Optional details (e.g. Sitio, Street, House No.)"
-              className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2"
+              className="w-full max-w-full rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2"
             />
 
             <input type="hidden" name="address" value={computedAddress} />
@@ -427,11 +427,15 @@ export default function IndividualRegistrationPage() {
 
           <label className="grid gap-1">
             <span className="text-sm">Local Church Pastor *</span>
-            <input
-              name="localChurchPastor"
-              required
-              className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2"
-            />
+            <div className="relative flex items-center">
+              <span className="absolute left-3 text-sm font-bold text-amber-200/80 pointer-events-none">Pastor</span>
+              <input
+                name="localChurchPastorNameOnly"
+                required
+                placeholder="Name only (e.g. Juan Dela Cruz)"
+                className="w-full rounded-lg border border-amber-100/30 bg-slate-950/40 pl-[3.8rem] pr-3 py-2 text-sm focus:border-amber-400/50 outline-none transition-all"
+              />
+            </div>
           </label>
 
           <label className="grid gap-1">
@@ -440,14 +444,14 @@ export default function IndividualRegistrationPage() {
               name="phoneNumber"
               required
               type="tel"
-              className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2"
+              className="w-full max-w-full rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2"
             />
           </label>
 
           <button
             type="submit"
             disabled={isSubmitting}
-            className="mt-2 rounded-xl bg-[linear-gradient(110deg,#f2be73,#d58147)] px-4 py-2.5 text-sm font-extrabold text-rose-950 disabled:opacity-70"
+            className="mt-2 w-full rounded-xl bg-[linear-gradient(110deg,#f2be73,#d58147)] px-4 py-2.5 text-sm font-extrabold text-rose-950 disabled:opacity-70"
           >
             {isSubmitting ? "Submitting..." : "Submit Individual Registration"}
           </button>
@@ -457,11 +461,14 @@ export default function IndividualRegistrationPage() {
 
         <style jsx global>{`
           select[name="ministry"],
-          select[name="ministry"] option,
           select.address-location-select,
-          select.address-location-select option,
-          select.address-option-select,
-          select.address-option-select option {
+          select.address-option-select {
+            background-color: #020617;
+            color: #fde68a;
+            max-width: 100%;
+            width: 100%;
+          }
+          select option {
             background-color: #020617;
             color: #fde68a;
           }
@@ -484,6 +491,25 @@ export default function IndividualRegistrationPage() {
             <p className="mt-2 text-center text-sm text-amber-200">
               Your individual registration has been submitted successfully.
             </p>
+            <div className="mt-4 flex flex-col items-center gap-2 text-center">
+              <p className="text-sm text-amber-200">Visit us for more updates:</p>
+              <a
+                href="https://www.facebook.com/CebuCityJoyfulSound"
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Visit our Facebook page"
+                className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-amber-100/30 bg-slate-800/80 text-amber-100 transition hover:border-amber-200 hover:bg-slate-700"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                  className="h-5 w-5"
+                >
+                  <path d="M13.5 22v-8h2.6l.4-3h-3V9.1c0-.9.3-1.5 1.6-1.5h1.7V5c-.3 0-1.3-.1-2.4-.1-2.4 0-4 1.4-4 4.2V11H8v3h2.4v8h3.1Z" />
+                </svg>
+              </a>
+            </div>
 
             <button
               type="button"
