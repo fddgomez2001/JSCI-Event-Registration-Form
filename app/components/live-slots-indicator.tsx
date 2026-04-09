@@ -6,12 +6,14 @@ type LiveSlotsIndicatorProps = {
   initialAvailableSlots: number;
   totalSlots: number;
   conference: "leyte" | "cebu";
+  onAvailabilityChange?: (availableSlots: number) => void;
 };
 
 export default function LiveSlotsIndicator({
   initialAvailableSlots,
   totalSlots,
   conference,
+  onAvailabilityChange,
 }: LiveSlotsIndicatorProps) {
   const [availableSlots, setAvailableSlots] = useState(initialAvailableSlots);
   const slotsCacheRef = useRef<Record<"leyte" | "cebu", number>>({
@@ -33,6 +35,7 @@ export default function LiveSlotsIndicator({
         const nextSlots = Math.max(data.availableSlots, 0);
         slotsCacheRef.current[conference] = nextSlots;
         setAvailableSlots(nextSlots);
+        onAvailabilityChange?.(nextSlots);
         return;
       }
 
@@ -40,10 +43,11 @@ export default function LiveSlotsIndicator({
       const nextSlots = Math.max(totalSlots - attendeesCount, 0);
       slotsCacheRef.current[conference] = nextSlots;
       setAvailableSlots(nextSlots);
+      onAvailabilityChange?.(nextSlots);
     } catch {
       // Keep last known value on refresh error.
     }
-  }, [conference, totalSlots]);
+  }, [conference, onAvailabilityChange, totalSlots]);
 
   useEffect(() => {
     const cached = slotsCacheRef.current[conference];

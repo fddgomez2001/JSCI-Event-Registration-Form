@@ -1,6 +1,19 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Legend,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 type AdminTab = "dashboard" | "registrations";
 type RegistrationView = "all" | "bulk";
@@ -84,6 +97,12 @@ type EditFormState = {
   attendeeNames: string;
 };
 
+type AdminCodeFormState = {
+  currentCode: string;
+  newCode: string;
+  confirmCode: string;
+};
+
 const ADMIN_USERNAME = "admin";
 const ADMIN_PASSWORD = "Admin@123!";
 const ROWS_PER_PAGE = 15;
@@ -99,6 +118,12 @@ const defaultEditForm: EditFormState = {
   attendeeNames: "",
 };
 
+const defaultCodeForm: AdminCodeFormState = {
+  currentCode: "",
+  newCode: "",
+  confirmCode: "",
+};
+
 const baseMinistryOptions = [
   "Pastor",
   "Church Council",
@@ -110,6 +135,29 @@ const baseMinistryOptions = [
   "Media Team",
   "Dance",
 ];
+
+const ministryAnalyticsOrder = [...baseMinistryOptions];
+const ministryChartColors = [
+  "#f2be73",
+  "#d58147",
+  "#facc15",
+  "#818cf8",
+  "#c084fc",
+  "#f59e0b",
+  "#22d3ee",
+  "#f97316",
+  "#38bdf8",
+];
+
+function normalizeMinistryBucket(value: string) {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return "";
+
+  if (normalized.startsWith("ministry head")) return "Ministry Head";
+
+  const matched = ministryAnalyticsOrder.find((option) => option.toLowerCase() === normalized);
+  return matched ?? "";
+}
 
 function formatDate(value: string) {
   const date = new Date(value);
@@ -137,9 +185,15 @@ function splitAttendeeNames(value: string) {
 export default function AdminPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [adminAccessDigits, setAdminAccessDigits] = useState(["", "", "", ""]);
+  const [hasCodeAccess, setHasCodeAccess] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isVerifyingCode, setIsVerifyingCode] = useState(false);
+  const [isUpdatingCode, setIsUpdatingCode] = useState(false);
   const [status, setStatus] = useState("");
+  const [codeStatus, setCodeStatus] = useState("");
+  const [securityStatus, setSecurityStatus] = useState("");
   const [activeTab, setActiveTab] = useState<AdminTab>("dashboard");
   const [registrationView, setRegistrationView] = useState<RegistrationView>("all");
   const [selectedConference, setSelectedConference] = useState<Conference>("leyte");
@@ -162,6 +216,62 @@ export default function AdminPage() {
 
   const [deletingRow, setDeletingRow] = useState<AdminRecord | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [showChangeCodeModal, setShowChangeCodeModal] = useState(false);
+  const [codeForm, setCodeForm] = useState<AdminCodeFormState>(defaultCodeForm);
+  const adminCodeInputRefs = useRef<Array<HTMLInputElement | null>>([]);
+
+  const adminAccessCode = useMemo(() => adminAccessDigits.join(""), [adminAccessDigits]);
+
+  function onAccessDigitChange(index: number, nextValue: string) {
+    const digit = nextValue.replace(/\D/g, "").slice(-1);
+    setAdminAccessDigits((current) => {
+      const updated = [...current];
+      updated[index] = digit;
+      return updated;
+    });
+
+    if (digit !== "" && index < 3) {
+      adminCodeInputRefs.current[index + 1]?.focus();
+    }
+  }
+
+  function onAccessDigitKeyDown(index: number, event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Backspace" && !adminAccessDigits[index] && index > 0) {
+      adminCodeInputRefs.current[index - 1]?.focus();
+      return;
+    }
+
+    if (event.key === "ArrowLeft" && index > 0) {
+      event.preventDefault();
+      adminCodeInputRefs.current[index - 1]?.focus();
+      return;
+    }
+
+    if (event.key === "ArrowRight" && index < 3) {
+      event.preventDefault();
+      adminCodeInputRefs.current[index + 1]?.focus();
+    }
+  }
+
+  function onAccessCodePaste(event: React.ClipboardEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const digits = event.clipboardData
+      .getData("text")
+      .replace(/\D/g, "")
+      .slice(0, 4)
+      .split("");
+
+    setAdminAccessDigits((current) => {
+      const updated = [...current];
+      for (let index = 0; index < 4; index += 1) {
+        updated[index] = digits[index] ?? "";
+      }
+      return updated;
+    });
+
+    const focusIndex = digits.length >= 4 ? 3 : Math.max(digits.length, 0);
+    adminCodeInputRefs.current[focusIndex]?.focus();
+  }
 
   const totalAttendees = useMemo(() => {
     const individualCount = individualRows.length;
@@ -225,6 +335,51 @@ export default function AdminPage() {
     });
     return Array.from(values);
   }, [allRows]);
+
+  const ministryAnalytics = useMemo(() => {
+    const counts = new Map<string, number>(
+      ministryAnalyticsOrder.map((ministry) => [ministry, 0]),
+    );
+
+    allRows.forEach((row) => {
+      const bucket = normalizeMinistryBucket(row.ministry);
+      if (!bucket) return;
+      counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
+    });
+
+    const totalMappedAttendees = Array.from(counts.values()).reduce((sum, count) => sum + count, 0);
+
+    return ministryAnalyticsOrder.map((ministry) => {
+      const count = counts.get(ministry) ?? 0;
+      const percentage = totalMappedAttendees > 0 ? (count / totalMappedAttendees) * 100 : 0;
+      return {
+        ministry,
+        count,
+        percentage,
+      };
+    });
+  }, [allRows]);
+
+  const totalMappedMinistryAttendees = useMemo(
+    () => ministryAnalytics.reduce((sum, item) => sum + item.count, 0),
+    [ministryAnalytics],
+  );
+
+  const mostActiveMinistry = useMemo(() => {
+    if (!ministryAnalytics.length) return null;
+    return ministryAnalytics.reduce((max, item) => (item.count > max.count ? item : max));
+  }, [ministryAnalytics]);
+
+  const leastActiveMinistry = useMemo(() => {
+    const withAttendees = ministryAnalytics.filter((item) => item.count > 0);
+    if (!withAttendees.length) return null;
+    return withAttendees.reduce((min, item) => (item.count < min.count ? item : min));
+  }, [ministryAnalytics]);
+
+  const ministryPieData = useMemo(
+    () => ministryAnalytics.map((item) => ({ name: item.ministry, value: item.count, percentage: item.percentage })),
+    [ministryAnalytics],
+  );
 
   const sortedBulkRows = useMemo(
     () => [...bulkRows].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()),
@@ -380,14 +535,123 @@ export default function AdminPage() {
     setPassword("");
   }
 
+  async function verifyAdminCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setCodeStatus("");
+
+    const code = adminAccessCode.trim();
+    if (!/^\d{4}$/.test(code)) {
+      setCodeStatus("Please enter a valid 4-digit code.");
+      return;
+    }
+
+    setIsVerifyingCode(true);
+    try {
+      const response = await fetch("/api/admin/security", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+
+      const data = (await response.json()) as { error?: string; message?: string };
+      if (!response.ok) {
+        setCodeStatus(data.error ?? "Unable to verify admin access code.");
+        setIsVerifyingCode(false);
+        return;
+      }
+
+      setHasCodeAccess(true);
+      setAdminAccessDigits(["", "", "", ""]);
+      setCodeStatus("");
+      setIsVerifyingCode(false);
+    } catch {
+      setCodeStatus("Network error while verifying access code.");
+      setIsVerifyingCode(false);
+    }
+  }
+
+  function openChangeCodeModal() {
+    setCodeForm(defaultCodeForm);
+    setSecurityStatus("");
+    setShowChangeCodeModal(true);
+  }
+
+  function closeChangeCodeModal() {
+    setShowChangeCodeModal(false);
+    setIsUpdatingCode(false);
+    setCodeForm(defaultCodeForm);
+  }
+
+  async function submitCodeUpdate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSecurityStatus("");
+
+    const currentCode = codeForm.currentCode.trim();
+    const newCode = codeForm.newCode.trim();
+    const confirmCode = codeForm.confirmCode.trim();
+
+    if (!/^\d{4}$/.test(currentCode) || !/^\d{4}$/.test(newCode) || !/^\d{4}$/.test(confirmCode)) {
+      setSecurityStatus("All code fields must be exactly 4 digits.");
+      return;
+    }
+
+    if (newCode !== confirmCode) {
+      setSecurityStatus("New code and confirmation do not match.");
+      return;
+    }
+
+    setIsUpdatingCode(true);
+    try {
+      const response = await fetch("/api/admin/security", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-username": username,
+          "x-admin-password": ADMIN_PASSWORD,
+        },
+        body: JSON.stringify({
+          currentCode,
+          newCode,
+          confirmCode,
+        }),
+      });
+
+      const data = (await response.json()) as { error?: string; message?: string };
+      if (!response.ok) {
+        setSecurityStatus(data.error ?? "Unable to update admin access code.");
+        setIsUpdatingCode(false);
+        return;
+      }
+
+      setSecurityStatus("Admin access code updated successfully.");
+      setCodeForm(defaultCodeForm);
+      setIsUpdatingCode(false);
+    } catch {
+      setSecurityStatus("Network error while updating admin access code.");
+      setIsUpdatingCode(false);
+    }
+  }
+
   async function refreshData() {
     if (!isAuthenticated) return;
     await loadAdminData(username, ADMIN_PASSWORD, selectedConference);
     setStatus(`Data refreshed for ${conferenceLabel(selectedConference)}.`);
   }
 
-  function logout() {
+  async function logout() {
+    try {
+      await fetch("/api/admin/security", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "logout" }),
+      });
+    } catch {
+      // Continue with local logout state even if API logout fails.
+    }
+
     setIsAuthenticated(false);
+    setHasCodeAccess(false);
+    setAdminAccessDigits(["", "", "", ""]);
     setUsername("");
     setPassword("");
     setIndividualRows([]);
@@ -398,6 +662,9 @@ export default function AdminPage() {
     setSelectedBulkId("");
     setAllSearch("");
     setBulkSearch("");
+    setShowChangeCodeModal(false);
+    setCodeStatus("");
+    setSecurityStatus("");
   }
 
   function openEditModal(row: AdminRecord) {
@@ -581,49 +848,92 @@ export default function AdminPage() {
 
   if (!isAuthenticated) {
     return (
-      <main className="min-h-screen bg-[linear-gradient(130deg,#331a1c_0%,#5c2f2d_30%,#1f2942_70%,#142032_100%)] px-4 py-8 md:flex md:items-center md:justify-center">
+      <main className="min-h-screen bg-[linear-gradient(130deg,#331a1c_0%,#5c2f2d_30%,#1f2942_70%,#142032_100%)] px-4 py-8 flex items-center justify-center">
         <section className="mx-auto w-full max-w-md rounded-3xl border border-amber-100/30 bg-slate-900/80 p-5 text-amber-50 shadow-[0_18px_45px_rgba(3,8,20,0.45)] sm:p-7">
           <div className="flex items-center justify-between gap-3">
-            <h1 className="text-2xl font-bold text-amber-100">Admin Login</h1>
+            <h1 className="text-2xl font-bold text-amber-100">{hasCodeAccess ? "Admin Login" : "Admin Access"}</h1>
             <a href="/" className="text-xs text-amber-300 underline underline-offset-2">
               Back to Landing Page
             </a>
           </div>
 
-          <p className="mt-2 text-sm text-amber-200">Enter admin credentials to open the dashboard.</p>
+          {!hasCodeAccess ? (
+            <>
+              <p className="mt-2 text-sm text-amber-200">Enter your secure 4-digit admin code to continue.</p>
 
-          <form className="mt-5 grid gap-3" onSubmit={onLogin}>
-            <label className="grid gap-1">
-              <span className="text-sm">Username</span>
-              <input
-                required
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-                className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2"
-              />
-            </label>
+              <div className="mt-6 flex flex-col items-center gap-6">
+                <div className="w-full text-center">
+                  <span className="text-sm font-bold tracking-wide text-amber-100/90 uppercase">Secured Admin Access Code</span>
+                  <div className="mt-5 flex justify-center gap-3 md:gap-4" onPaste={onAccessCodePaste}>
+                    {adminAccessDigits.map((digit, index) => (
+                      <input
+                        key={`admin-code-${index}`}
+                        ref={(element) => {
+                          adminCodeInputRefs.current[index] = element;
+                        }}
+                        inputMode="numeric"
+                        maxLength={1}
+                        value={digit}
+                        onChange={(event) => onAccessDigitChange(index, event.target.value)}
+                        onKeyDown={(event) => onAccessDigitKeyDown(index, event)}
+                        className="w-16 h-16 md:w-20 md:h-20 rounded-xl border-2 border-amber-100/20 bg-slate-950/60 px-0 py-2 text-center text-3xl font-extrabold text-amber-100 shadow-inner focus:border-amber-400/50 focus:outline-none transition-all"
+                        aria-label={`Admin code digit ${index + 1}`}
+                      />
+                    ))}
+                  </div>
+                </div>
 
-            <label className="grid gap-1">
-              <span className="text-sm">Password</span>
-              <input
-                required
-                type="password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2"
-              />
-            </label>
+                <button
+                  type="submit"
+                  form="verify-code-form"
+                  disabled={isVerifyingCode}
+                  className="w-full rounded-xl bg-[linear-gradient(110deg,#f2be73,#d58147)] px-4 py-3 text-sm font-extrabold text-rose-950 shadow-lg transition active:scale-[0.98] disabled:opacity-70"
+                >
+                  {isVerifyingCode ? "Verifying..." : "Continue"}
+                </button>
+                <form id="verify-code-form" onSubmit={verifyAdminCode} className="hidden" />
+              </div>
 
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="mt-1 rounded-xl bg-[linear-gradient(110deg,#f2be73,#d58147)] px-4 py-2.5 text-sm font-extrabold text-rose-950 disabled:opacity-70"
-            >
-              {isLoading ? "Signing in..." : "Login to Admin"}
-            </button>
-          </form>
+              {codeStatus ? <p className="mt-3 text-sm text-amber-200">{codeStatus}</p> : null}
+            </>
+          ) : (
+            <>
+              <p className="mt-2 text-sm text-amber-200">Enter admin credentials to open the dashboard.</p>
 
-          {status ? <p className="mt-3 text-sm text-amber-200">{status}</p> : null}
+              <form className="mt-5 grid gap-3" onSubmit={onLogin}>
+                <label className="grid gap-1">
+                  <span className="text-sm">Username</span>
+                  <input
+                    required
+                    value={username}
+                    onChange={(event) => setUsername(event.target.value)}
+                    className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2"
+                  />
+                </label>
+
+                <label className="grid gap-1">
+                  <span className="text-sm">Password</span>
+                  <input
+                    required
+                    type="password"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2"
+                  />
+                </label>
+
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="mt-1 rounded-xl bg-[linear-gradient(110deg,#f2be73,#d58147)] px-4 py-2.5 text-sm font-extrabold text-rose-950 disabled:opacity-70"
+                >
+                  {isLoading ? "Signing in..." : "Login to Admin"}
+                </button>
+              </form>
+
+              {status ? <p className="mt-3 text-sm text-amber-200">{status}</p> : null}
+            </>
+          )}
         </section>
       </main>
     );
@@ -631,17 +941,17 @@ export default function AdminPage() {
 
   return (
     <main className="min-h-screen bg-[linear-gradient(130deg,#331a1c_0%,#5c2f2d_30%,#1f2942_70%,#142032_100%)] text-amber-50">
-      <div className="grid min-h-screen md:grid-cols-[260px_minmax(0,1fr)]">
-        <aside className="border-b border-amber-100/20 bg-slate-900/85 p-4 md:border-b-0 md:border-r md:p-5">
+      <div className="flex flex-col min-h-screen md:grid md:grid-cols-[260px_minmax(0,1fr)]">
+        <aside className="border-b border-amber-100/20 bg-slate-900/85 p-4 md:border-b-0 md:border-r md:p-5 md:min-h-screen">
           <div className="md:sticky md:top-5">
             <h2 className="text-lg font-bold text-amber-100">Admin Panel</h2>
             <p className="mt-1 text-xs text-amber-200">Event Registration Management</p>
 
-            <nav className="mt-4 grid gap-2">
+            <nav className="mt-4 flex flex-row gap-2 md:grid md:grid-cols-1 overflow-x-auto pb-2 md:pb-0 scrollbar-hide">
               <button
                 type="button"
                 onClick={() => setActiveTab("dashboard")}
-                className={`rounded-lg px-3 py-2 text-left text-sm font-semibold transition ${
+                className={`flex-none rounded-lg px-3 py-2 text-left text-sm font-semibold transition whitespace-nowrap ${
                   activeTab === "dashboard"
                     ? "bg-amber-200 text-slate-900"
                     : "bg-slate-900/70 text-amber-100 hover:bg-slate-800"
@@ -652,7 +962,7 @@ export default function AdminPage() {
               <button
                 type="button"
                 onClick={() => setActiveTab("registrations")}
-                className={`rounded-lg px-3 py-2 text-left text-sm font-semibold transition ${
+                className={`flex-none rounded-lg px-3 py-2 text-left text-sm font-semibold transition whitespace-nowrap ${
                   activeTab === "registrations"
                     ? "bg-amber-200 text-slate-900"
                     : "bg-slate-900/70 text-amber-100 hover:bg-slate-800"
@@ -662,10 +972,10 @@ export default function AdminPage() {
               </button>
             </nav>
 
-            <div className="mt-6 rounded-xl border border-amber-100/20 bg-slate-950/40 p-3">
-              <p className="text-[11px] uppercase tracking-[0.18em] text-amber-300/80">Viewing Table</p>
-              <p className="mt-1 text-sm font-bold text-amber-100">{conferenceLabel(selectedConference)}</p>
-              <div className="mt-2 flex gap-2 text-xs">
+            <div className="mt-4 md:mt-6 rounded-xl border border-amber-100/20 bg-slate-950/40 p-3">
+              <p className="text-[10px] md:text-[11px] uppercase tracking-[0.18em] text-amber-300/80">Viewing Table</p>
+              <p className="mt-0.5 md:mt-1 text-xs md:text-sm font-bold text-amber-100">{conferenceLabel(selectedConference)}</p>
+              <div className="mt-2 flex gap-2 text-[10px] md:text-xs">
                 <button
                   type="button"
                   onClick={() => setSelectedConference("leyte")}
@@ -691,18 +1001,25 @@ export default function AdminPage() {
               </div>
             </div>
 
-            <div className="mt-6 grid gap-2 text-xs">
+            <div className="mt-4 md:mt-6 grid grid-cols-2 md:grid-cols-1 gap-2 text-[10px] md:text-xs">
               <button
                 type="button"
                 onClick={refreshData}
-                className="rounded-lg border border-amber-200/40 px-3 py-2 text-amber-100 hover:bg-slate-800"
+                className="rounded-lg border border-amber-200/40 px-3 py-1.5 md:py-2 text-amber-100 hover:bg-slate-800"
               >
                 Refresh Data
               </button>
               <button
                 type="button"
+                onClick={openChangeCodeModal}
+                className="rounded-lg border border-indigo-200/40 px-3 py-1.5 md:py-2 text-indigo-200 hover:bg-slate-800"
+              >
+                Change 4-Digit Code
+              </button>
+              <button
+                type="button"
                 onClick={logout}
-                className="rounded-lg border border-rose-200/40 px-3 py-2 text-rose-200 hover:bg-slate-800"
+                className="rounded-lg border border-rose-200/40 px-3 py-1.5 md:py-2 text-rose-200 hover:bg-slate-800"
               >
                 Logout
               </button>
@@ -713,25 +1030,150 @@ export default function AdminPage() {
         <section className="p-4 sm:p-6">
           <div className="rounded-2xl border border-amber-100/20 bg-slate-900/60 p-4 sm:p-5">
             {activeTab === "dashboard" ? (
-              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                <article className="rounded-xl border border-amber-100/20 bg-slate-900/70 p-4">
-                  <p className="text-xs text-amber-200">Total Attendees</p>
-                  <p className="mt-2 text-3xl font-bold text-amber-100">{totalAttendees}</p>
-                </article>
+              <div className="grid gap-4">
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                  <article className="rounded-xl border border-amber-100/20 bg-slate-900/70 p-4">
+                    <p className="text-xs text-amber-200">Total Attendees</p>
+                    <p className="mt-2 text-3xl font-bold text-amber-100">{totalAttendees}</p>
+                  </article>
 
-                <article className="rounded-xl border border-amber-100/20 bg-slate-900/70 p-4">
-                  <p className="text-xs text-amber-200">Individual Registrations</p>
-                  <p className="mt-2 text-3xl font-bold text-amber-100">{individualRows.length}</p>
-                </article>
+                  <article className="rounded-xl border border-amber-100/20 bg-slate-900/70 p-4">
+                    <p className="text-xs text-amber-200">Individual Registrations</p>
+                    <p className="mt-2 text-3xl font-bold text-amber-100">{individualRows.length}</p>
+                  </article>
 
-                <article className="rounded-xl border border-amber-100/20 bg-slate-900/70 p-4">
-                  <p className="text-xs text-amber-200">Bulk Registrations</p>
-                  <p className="mt-2 text-3xl font-bold text-amber-100">{bulkRows.length}</p>
-                </article>
+                  <article className="rounded-xl border border-amber-100/20 bg-slate-900/70 p-4">
+                    <p className="text-xs text-amber-200">Bulk Registrations</p>
+                    <p className="mt-2 text-3xl font-bold text-amber-100">{bulkRows.length}</p>
+                  </article>
 
-                <article className="rounded-xl border border-amber-100/20 bg-slate-900/70 p-4">
-                  <p className="text-xs text-amber-200">Total Registration Entries</p>
-                  <p className="mt-2 text-3xl font-bold text-amber-100">{totalRegistrations}</p>
+                  <article className="rounded-xl border border-amber-100/20 bg-slate-900/70 p-4">
+                    <p className="text-xs text-amber-200">Total Registration Entries</p>
+                    <p className="mt-2 text-3xl font-bold text-amber-100">{totalRegistrations}</p>
+                  </article>
+                </div>
+
+                <article className="rounded-xl border border-amber-100/20 bg-slate-900/70 p-4 sm:p-5">
+                  <div className="flex flex-wrap items-end justify-between gap-2">
+                    <div>
+                      <h3 className="text-base font-bold text-amber-100 sm:text-lg">Ministry Attendee Analytics</h3>
+                      <p className="text-xs text-amber-300/90">Distribution, volume comparison, and quick insights</p>
+                    </div>
+                    <span className="rounded-full border border-amber-100/25 bg-slate-950/55 px-3 py-1 text-xs font-semibold text-amber-200">
+                      {conferenceLabel(selectedConference)}
+                    </span>
+                  </div>
+
+                  <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                    <article className="rounded-xl border border-amber-100/20 bg-[linear-gradient(140deg,rgba(242,190,115,0.2),rgba(19,32,50,0.6))] p-3 shadow-[0_8px_20px_rgba(2,6,23,0.35)] transition hover:-translate-y-0.5">
+                      <p className="text-[11px] uppercase tracking-[0.08em] text-amber-200">Total Mapped Attendees</p>
+                      <p className="mt-2 text-2xl font-extrabold text-amber-100">{totalMappedMinistryAttendees}</p>
+                    </article>
+                    <article className="rounded-xl border border-violet-200/20 bg-[linear-gradient(145deg,rgba(167,139,250,0.2),rgba(19,32,50,0.62))] p-3 shadow-[0_8px_20px_rgba(2,6,23,0.35)] transition hover:-translate-y-0.5">
+                      <p className="text-[11px] uppercase tracking-[0.08em] text-violet-200">Most Active Ministry</p>
+                      <p className="mt-2 text-sm font-bold text-amber-100">
+                        {mostActiveMinistry ? mostActiveMinistry.ministry : "No data"}
+                      </p>
+                      <p className="mt-1 text-xs text-amber-200">
+                        {mostActiveMinistry ? `${mostActiveMinistry.count} attendees (${mostActiveMinistry.percentage.toFixed(1)}%)` : "No attendees yet"}
+                      </p>
+                    </article>
+                    <article className="rounded-xl border border-cyan-200/20 bg-[linear-gradient(145deg,rgba(34,211,238,0.2),rgba(19,32,50,0.62))] p-3 shadow-[0_8px_20px_rgba(2,6,23,0.35)] transition hover:-translate-y-0.5">
+                      <p className="text-[11px] uppercase tracking-[0.08em] text-cyan-200">Least Active Ministry</p>
+                      <p className="mt-2 text-sm font-bold text-amber-100">
+                        {leastActiveMinistry ? leastActiveMinistry.ministry : "No data"}
+                      </p>
+                      <p className="mt-1 text-xs text-amber-200">
+                        {leastActiveMinistry ? `${leastActiveMinistry.count} attendees (${leastActiveMinistry.percentage.toFixed(1)}%)` : "No attendees yet"}
+                      </p>
+                    </article>
+                  </div>
+
+                  <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                    <article className="rounded-xl border border-amber-100/20 bg-slate-950/45 p-3 sm:p-4">
+                      <p className="mb-2 text-sm font-semibold text-amber-100">Percentage Distribution by Ministry</p>
+                      <div className="h-72 w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <PieChart>
+                            <Pie
+                              data={ministryPieData}
+                              dataKey="value"
+                              nameKey="name"
+                              innerRadius={62}
+                              outerRadius={106}
+                              paddingAngle={3}
+                              label={({ name, percent }) => {
+                                const ratio = typeof percent === "number" ? percent : 0;
+                                return `${name}: ${(ratio * 100).toFixed(1)}%`;
+                              }}
+                              labelLine={false}
+                              isAnimationActive
+                            >
+                              {ministryPieData.map((entry, index) => (
+                                <Cell key={entry.name} fill={ministryChartColors[index % ministryChartColors.length]} />
+                              ))}
+                            </Pie>
+                            <Tooltip
+                              formatter={(value, _name, payload) => {
+                                const attendees = Number(value ?? 0);
+                                return [
+                                `${attendees} attendee${attendees === 1 ? "" : "s"}`,
+                                payload?.payload?.name ?? "Ministry",
+                              ];
+                              }}
+                              contentStyle={{ background: "#0f172a", border: "1px solid rgba(251,191,36,0.35)", borderRadius: "12px" }}
+                            />
+                            <Legend wrapperStyle={{ color: "#fde68a", fontSize: "12px" }} />
+                          </PieChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </article>
+
+                    <article className="rounded-xl border border-amber-100/20 bg-slate-950/45 p-3 sm:p-4">
+                      <p className="mb-2 text-sm font-semibold text-amber-100">Attendee Count Comparison</p>
+                      <div className="h-72 w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart
+                            data={ministryAnalytics}
+                            layout="vertical"
+                            margin={{ top: 8, right: 20, left: 10, bottom: 8 }}
+                          >
+                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.25)" />
+                            <XAxis type="number" stroke="#fde68a" />
+                            <YAxis
+                              type="category"
+                              dataKey="ministry"
+                              width={110}
+                              stroke="#fde68a"
+                              tick={{ fontSize: 11 }}
+                            />
+                            <Tooltip
+                              formatter={(value, _name, payload) => {
+                                const attendees = Number(value ?? 0);
+                                const pct = Number(payload?.payload?.percentage ?? 0);
+                                return [`${attendees} attendee${attendees === 1 ? "" : "s"} (${pct.toFixed(1)}%)`, "Count"];
+                              }}
+                              contentStyle={{ background: "#0f172a", border: "1px solid rgba(251,191,36,0.35)", borderRadius: "12px" }}
+                            />
+                            <Legend wrapperStyle={{ color: "#fde68a", fontSize: "12px" }} />
+                            <Bar
+                              dataKey="count"
+                              name="Attendees"
+                              radius={[0, 8, 8, 0]}
+                              fill="url(#analyticsBarGradient)"
+                              animationDuration={650}
+                            />
+                            <defs>
+                              <linearGradient id="analyticsBarGradient" x1="0" y1="0" x2="1" y2="0">
+                                <stop offset="0%" stopColor="#f2be73" />
+                                <stop offset="100%" stopColor="#a78bfa" />
+                              </linearGradient>
+                            </defs>
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </article>
+                  </div>
                 </article>
               </div>
             ) : (
@@ -771,12 +1213,12 @@ export default function AdminPage() {
 
                 {registrationView === "all" ? (
                   <>
-                    <div className="mb-3 grid gap-2 rounded-xl border border-amber-100/20 bg-slate-900/50 p-3 lg:grid-cols-[minmax(0,1fr)_180px_200px]">
+                    <div className="mb-3 grid gap-2 rounded-xl border border-amber-100/20 bg-slate-900/50 p-2 md:p-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_180px_200px]">
                       <input
                         value={allSearch}
                         onChange={(event) => setAllSearch(event.target.value)}
-                        placeholder="Search name, church, address, phone, attendees"
-                        className="rounded-lg border border-amber-100/30 bg-slate-950/50 px-3 py-2 text-sm"
+                        placeholder="Search name, church, pastor, phone..."
+                        className="rounded-lg border border-amber-100/30 bg-slate-950/50 px-3 py-2 text-sm w-full sm:col-span-2 lg:col-span-1"
                       />
 
                       <select
@@ -803,7 +1245,7 @@ export default function AdminPage() {
                       </select>
                     </div>
 
-                    <div className="overflow-x-auto rounded-xl border border-amber-100/20">
+                    <div className="hidden md:block overflow-x-auto rounded-xl border border-amber-100/20">
                       <table className="min-w-[1250px] w-full text-left text-sm">
                         <thead className="bg-slate-900/80 text-amber-200">
                           <tr>
@@ -865,6 +1307,76 @@ export default function AdminPage() {
                           )}
                         </tbody>
                       </table>
+                    </div>
+
+                    <div className="md:hidden space-y-3">
+                      {paginatedAllRows.length ? (
+                        paginatedAllRows.map((row) => (
+                          <article key={row.key} className="rounded-xl border border-amber-100/20 bg-slate-900/70 p-4 shadow-lg">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold tracking-wider ${
+                                row.sourceType === 'bulk' ? 'bg-amber-100/20 text-amber-200' : 'bg-blue-100/20 text-blue-200'
+                              }`}>
+                                {row.sourceLabel}
+                              </span>
+                              <span className="text-[10px] text-amber-300 opacity-70">
+                                {formatDate(row.submittedAt)}
+                              </span>
+                            </div>
+                            
+                            <h4 className="text-base font-bold text-amber-100">{row.name}</h4>
+                            
+                            <div className="mt-2 grid grid-cols-2 gap-y-2 gap-x-4 text-xs">
+                              <div>
+                                <p className="text-amber-300/60 uppercase text-[9px] font-semibold">Church</p>
+                                <p className="text-amber-50">{row.church}</p>
+                              </div>
+                              <div>
+                                <p className="text-amber-300/60 uppercase text-[9px] font-semibold">Ministry</p>
+                                <p className="text-amber-100 font-medium">{row.ministry}</p>
+                              </div>
+                              <div>
+                                <p className="text-amber-300/60 uppercase text-[9px] font-semibold">Pastor</p>
+                                <p className="text-amber-50">{row.pastor}</p>
+                              </div>
+                              <div>
+                                <p className="text-amber-300/60 uppercase text-[9px] font-semibold">Phone</p>
+                                <p className="text-amber-50">{row.phone}</p>
+                              </div>
+                            </div>
+
+                            {row.sourceType === "bulk" && (
+                                <div className="mt-3 bg-slate-950/40 rounded-lg p-2 border border-amber-100/10">
+                                    <p className="text-amber-300/60 uppercase text-[9px] font-semibold mb-1">Bulk Details</p>
+                                    <p className="text-[11px] text-amber-100 leading-relaxed italic">
+                                        Managed by <span className="font-semibold">{row.contactPerson}</span> • {row.attendees} attendees
+                                    </p>
+                                </div>
+                            )}
+
+                            <div className="mt-4 flex gap-2 pt-3 border-t border-amber-100/10">
+                              <button
+                                type="button"
+                                onClick={() => openEditFromAllRow(row)}
+                                className="flex-1 rounded-lg border border-amber-100/40 bg-slate-800/40 py-2 text-xs font-semibold text-amber-100 hover:bg-slate-700"
+                              >
+                                Edit Record
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => openDeleteFromAllRow(row)}
+                                className="flex-1 rounded-lg border border-rose-200/40 bg-rose-900/10 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-900/20"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </article>
+                        ))
+                      ) : (
+                        <div className="rounded-xl border border-amber-100/20 bg-slate-900/50 p-8 text-center text-amber-200">
+                          No registrations found matching your filters.
+                        </div>
+                      )}
                     </div>
 
                     <div className="mt-3 flex items-center justify-between rounded-xl border border-amber-100/20 bg-slate-900/45 px-3 py-2 text-xs text-amber-200">
@@ -1221,6 +1733,81 @@ export default function AdminPage() {
                 {isDeleting ? "Deleting..." : "Delete"}
               </button>
             </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showChangeCodeModal ? (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/70 px-4">
+          <div className="w-full max-w-md rounded-2xl border border-amber-100/30 bg-slate-900 p-4 shadow-[0_24px_60px_rgba(2,6,23,0.65)] sm:p-5">
+            <h3 className="text-lg font-bold text-amber-100">Change Admin 4-Digit Code</h3>
+            <p className="mt-1 text-xs text-amber-200">Use a private 4-digit code and keep it confidential.</p>
+
+            <form className="mt-4 grid gap-3" onSubmit={submitCodeUpdate}>
+              <label className="grid gap-1">
+                <span className="text-xs text-amber-200">Current Code</span>
+                <input
+                  required
+                  inputMode="numeric"
+                  pattern="\d{4}"
+                  maxLength={4}
+                  value={codeForm.currentCode}
+                  onChange={(event) =>
+                    setCodeForm((prev) => ({ ...prev, currentCode: event.target.value.replace(/\D/g, "").slice(0, 4) }))
+                  }
+                  className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 text-sm tracking-[0.28em] text-center"
+                />
+              </label>
+
+              <label className="grid gap-1">
+                <span className="text-xs text-amber-200">New Code</span>
+                <input
+                  required
+                  inputMode="numeric"
+                  pattern="\d{4}"
+                  maxLength={4}
+                  value={codeForm.newCode}
+                  onChange={(event) =>
+                    setCodeForm((prev) => ({ ...prev, newCode: event.target.value.replace(/\D/g, "").slice(0, 4) }))
+                  }
+                  className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 text-sm tracking-[0.28em] text-center"
+                />
+              </label>
+
+              <label className="grid gap-1">
+                <span className="text-xs text-amber-200">Confirm New Code</span>
+                <input
+                  required
+                  inputMode="numeric"
+                  pattern="\d{4}"
+                  maxLength={4}
+                  value={codeForm.confirmCode}
+                  onChange={(event) =>
+                    setCodeForm((prev) => ({ ...prev, confirmCode: event.target.value.replace(/\D/g, "").slice(0, 4) }))
+                  }
+                  className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 text-sm tracking-[0.28em] text-center"
+                />
+              </label>
+
+              {securityStatus ? <p className="text-xs text-amber-200">{securityStatus}</p> : null}
+
+              <div className="mt-2 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={closeChangeCodeModal}
+                  className="rounded-lg border border-amber-100/30 px-3 py-2 text-sm text-amber-200"
+                >
+                  Close
+                </button>
+                <button
+                  type="submit"
+                  disabled={isUpdatingCode}
+                  className="rounded-lg bg-[linear-gradient(110deg,#f2be73,#d58147)] px-4 py-2 text-sm font-bold text-rose-950 disabled:opacity-60"
+                >
+                  {isUpdatingCode ? "Saving..." : "Update Code"}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       ) : null}

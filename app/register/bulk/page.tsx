@@ -805,7 +805,11 @@ export default function BulkRegistrationPage() {
       ministry: manualAttendeeDraft.ministry.trim(),
       church: useContactPersonDetails ? manualContactDetails.church.trim() : "",
       address: useContactPersonDetails ? manualContactDetails.address.trim() : manualAttendeeDraft.address.trim(),
-      localChurchPastor: useContactPersonDetails ? manualContactDetails.localChurchPastor.trim() : "",
+      localChurchPastor: useContactPersonDetails 
+        ? (manualContactDetails.localChurchPastor.trim().toLowerCase().startsWith("pastor") 
+           ? manualContactDetails.localChurchPastor.trim() 
+           : `Pastor ${manualContactDetails.localChurchPastor.trim()}`)
+        : "",
     };
 
     setManualRows((prev) => [...prev, row]);
@@ -977,7 +981,7 @@ export default function BulkRegistrationPage() {
       church: excelLeadDetails.church,
       ministry: excelLeadDetails.ministry,
       address: excelLeadDetails.address,
-      localChurchPastor: excelLeadDetails.localChurchPastor,
+      localChurchPastor: `Pastor ${excelLeadDetails.localChurchPastor.trim()}`,
       phoneNumber: excelLeadDetails.phoneNumber,
       attendees: importedRows.map((row) => row.fullName),
     });
@@ -1021,7 +1025,7 @@ export default function BulkRegistrationPage() {
       church: manualContactDetails.church,
       ministry: manualContactDetails.ministry,
       address: manualContactDetails.address,
-      localChurchPastor: manualContactDetails.localChurchPastor,
+      localChurchPastor: `Pastor ${manualContactDetails.localChurchPastor.trim()}`,
       phoneNumber: manualContactDetails.phoneNumber,
       attendeeCount: String(manualRows.length),
       attendeeNames: manualRows.map((row) => row.fullName).join("\n"),
@@ -1224,7 +1228,7 @@ export default function BulkRegistrationPage() {
       church: imageLeadDetails.church,
       ministry: imageLeadDetails.ministry,
       address: imageLeadDetails.address,
-      localChurchPastor: imageLeadDetails.localChurchPastor,
+      localChurchPastor: `Pastor ${imageLeadDetails.localChurchPastor.trim()}`,
       phoneNumber: imageLeadDetails.phoneNumber,
       attendees: imageRows.map((row) => row.fullName),
     });
@@ -1322,11 +1326,12 @@ export default function BulkRegistrationPage() {
                 <h3 className="text-sm font-semibold text-amber-200">Contact Person</h3>
                 <div className="mt-2 grid gap-2">
                   <label className="grid gap-1">
-                    <span className="text-xs">Contact Person Name *</span>
+                    <span className="text-xs">Full Name *</span>
                     <input
                       value={manualContactDetails.contactName}
                       onChange={(event) => updateManualContactDetails("contactName", event.target.value)}
-                      className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 text-sm"
+                      placeholder="e.g. Juan Dela Cruz"
+                      className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 text-sm focus:border-amber-400/50 outline-none transition-all"
                     />
                   </label>
                   <label className="grid gap-1">
@@ -1374,11 +1379,15 @@ export default function BulkRegistrationPage() {
                   />
                   <label className="grid gap-1">
                     <span className="text-xs">Local Church Pastor *</span>
-                    <input
-                      value={manualContactDetails.localChurchPastor}
-                      onChange={(event) => updateManualContactDetails("localChurchPastor", event.target.value)}
-                      className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 text-sm"
-                    />
+                    <div className="relative flex items-center">
+                      <span className="absolute left-3 text-[10px] font-bold text-amber-200/80 pointer-events-none">Pastor</span>
+                      <input
+                        value={manualContactDetails.localChurchPastor}
+                        onChange={(event) => updateManualContactDetails("localChurchPastor", event.target.value)}
+                        placeholder="Name only (e.g. Juan Dela Cruz)"
+                        className="w-full rounded-lg border border-amber-100/30 bg-slate-950/40 pl-12 pr-3 py-2 text-sm focus:border-amber-400/50 outline-none transition-all"
+                      />
+                    </div>
                   </label>
                   <label className="grid gap-1">
                     <span className="text-xs">Phone Number *</span>
@@ -1585,11 +1594,12 @@ export default function BulkRegistrationPage() {
                     <h3 className="text-sm font-semibold text-amber-200">Required Before Upload</h3>
                     <div className="mt-2 grid gap-2">
                       <label className="grid gap-1">
-                        <span className="text-xs">Contact Person Name *</span>
+                        <span className="text-xs">Full Name *</span>
                         <input
                           value={excelLeadDetails.contactName}
                           onChange={(event) => updateExcelLeadDetails("contactName", event.target.value)}
-                          className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 text-sm"
+                          placeholder="e.g. Juan Dela Cruz"
+                          className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 text-sm focus:border-amber-400/50 outline-none transition-all"
                         />
                       </label>
                       <label className="grid gap-1">
@@ -1637,11 +1647,15 @@ export default function BulkRegistrationPage() {
                       />
                       <label className="grid gap-1">
                         <span className="text-xs">Local Church Pastor *</span>
-                        <input
-                          value={excelLeadDetails.localChurchPastor}
-                          onChange={(event) => updateExcelLeadDetails("localChurchPastor", event.target.value)}
-                          className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 text-sm"
-                        />
+                        <div className="relative flex items-center">
+                          <span className="absolute left-3 text-[10px] font-bold text-amber-200/80 pointer-events-none">Pastor</span>
+                          <input
+                            value={excelLeadDetails.localChurchPastor}
+                            onChange={(event) => updateExcelLeadDetails("localChurchPastor", event.target.value)}
+                            placeholder="Name only (e.g. Juan Dela Cruz)"
+                            className="w-full rounded-lg border border-amber-100/30 bg-slate-950/40 pl-12 pr-3 py-2 text-sm focus:border-amber-400/50 outline-none transition-all"
+                          />
+                        </div>
                       </label>
                       <label className="grid gap-1">
                         <span className="text-xs">Phone Number *</span>
@@ -1832,11 +1846,12 @@ export default function BulkRegistrationPage() {
                   <h3 className="text-sm font-semibold text-amber-200">Required Before Upload</h3>
                   <div className="mt-2 grid gap-2">
                     <label className="grid gap-1">
-                      <span className="text-xs">Contact Person Name *</span>
+                      <span className="text-xs">Full Name *</span>
                       <input
                         value={imageLeadDetails.contactName}
                         onChange={(event) => updateImageLeadDetails("contactName", event.target.value)}
-                        className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 text-sm"
+                        placeholder="e.g. Juan Dela Cruz"
+                        className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 text-sm focus:border-amber-400/50 outline-none transition-all"
                       />
                     </label>
                     <label className="grid gap-1">
@@ -1884,11 +1899,15 @@ export default function BulkRegistrationPage() {
                     </label>
                     <label className="grid gap-1">
                       <span className="text-xs">Local Church Pastor *</span>
-                      <input
-                        value={imageLeadDetails.localChurchPastor}
-                        onChange={(event) => updateImageLeadDetails("localChurchPastor", event.target.value)}
-                        className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 text-sm"
-                      />
+                      <div className="relative flex items-center">
+                        <span className="absolute left-3 text-[10px] font-bold text-amber-200/80 pointer-events-none">Pastor</span>
+                        <input
+                          value={imageLeadDetails.localChurchPastor}
+                          onChange={(event) => updateImageLeadDetails("localChurchPastor", event.target.value)}
+                          placeholder="Name only (e.g. Juan Dela Cruz)"
+                          className="w-full rounded-lg border border-amber-100/30 bg-slate-950/40 pl-12 pr-3 py-2 text-sm focus:border-amber-400/50 outline-none transition-all"
+                        />
+                      </div>
                     </label>
                     <label className="grid gap-1">
                       <span className="text-xs">Phone Number *</span>

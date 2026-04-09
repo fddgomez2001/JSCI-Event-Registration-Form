@@ -43,9 +43,14 @@ export default function Page() {
 	const [selectedConference, setSelectedConference] = useState<ConferenceKey>("leyte");
 	const [pendingConference, setPendingConference] = useState<ConferenceKey | null>(null);
 	const [isSwitchingConference, setIsSwitchingConference] = useState(false);
+	const [availableSlotsByConference, setAvailableSlotsByConference] = useState<Record<ConferenceKey, number>>({
+		leyte: conferenceConfigs.leyte.totalSlots,
+		cebu: conferenceConfigs.cebu.totalSlots,
+	});
 
 	const conference = conferenceConfigs[selectedConference];
 	const conferenceQuery = useMemo(() => `conference=${conference.key}`, [conference.key]);
+	const isRegistrationClosed = (availableSlotsByConference[conference.key] ?? conference.totalSlots) <= 0;
 
 	function onConferenceSelect(nextConference: ConferenceKey) {
 		if (nextConference === selectedConference) {
@@ -104,8 +109,15 @@ export default function Page() {
 		window.location.href = gmailAppUrl;
 	}
 
+	function onSlotsAvailabilityChange(availableSlots: number) {
+		setAvailableSlotsByConference((current) => ({
+			...current,
+			[conference.key]: availableSlots,
+		}));
+	}
+
 	return (
-		<main className="relative h-screen overflow-hidden bg-[radial-gradient(circle_at_15%_20%,rgba(207,103,54,0.4),transparent_35%),radial-gradient(circle_at_85%_15%,rgba(255,207,122,0.22),transparent_32%),linear-gradient(130deg,#331a1c_0%,#5c2f2d_28%,#1f2942_72%,#142032_100%)] px-3 py-3 sm:px-4 sm:py-4">
+		<main className="relative min-h-screen overflow-x-hidden overflow-y-auto lg:h-screen lg:overflow-hidden bg-[radial-gradient(circle_at_15%_20%,rgba(207,103,54,0.4),transparent_35%),radial-gradient(circle_at_85%_15%,rgba(255,207,122,0.22),transparent_32%),linear-gradient(130deg,#331a1c_0%,#5c2f2d_28%,#1f2942_72%,#142032_100%)] px-3 py-6 sm:px-4 sm:py-12 lg:px-4 lg:py-4">
 			<div
 				className="pointer-events-none absolute -left-[8vw] -top-[10vw] h-[42vw] w-[42vw] blur-[70px] opacity-20"
 				style={{ background: "#f6b261" }}
@@ -118,10 +130,10 @@ export default function Page() {
 			/>
 
 			<section
-				className="relative z-10 mx-auto grid h-full w-full max-w-[1360px] animate-[fade-up_700ms_ease-out] content-center place-items-center gap-4 lg:grid-cols-[minmax(0,716px)_minmax(0,620px)] lg:gap-0"
+				className="relative z-10 mx-auto grid h-auto lg:h-full min-h-screen w-full max-w-[1360px] animate-[fade-up_700ms_ease-out] content-center place-items-center gap-4 lg:grid-cols-[minmax(0,716px)_minmax(0,620px)] lg:gap-0"
 				aria-label="Event registration landing page"
 			>
-				<article className="relative aspect-square w-full max-w-[min(716px,calc(100vh-2rem))] overflow-hidden rounded-3xl border border-amber-100/35 shadow-[0_18px_45px_rgba(3,8,20,0.45)] lg:max-w-none lg:rounded-r-none">
+				<article className="relative h-auto min-h-[min(450px,80vh)] w-full max-w-[716px] lg:aspect-square lg:h-full lg:max-w-[min(716px,calc(100vh-2rem))] overflow-hidden rounded-3xl border border-amber-100/35 shadow-[0_18px_45px_rgba(3,8,20,0.45)] lg:max-w-none lg:rounded-r-none">
 					<img
 						src={conference.bannerImage}
 						alt="Empowered With Purpose event banner"
@@ -130,16 +142,16 @@ export default function Page() {
 						}`}
 					/>
 
-					<div className="absolute inset-x-0 bottom-0 flex justify-center bg-gradient-to-t from-black/70 via-black/35 to-transparent px-3 pb-5 pt-3 sm:px-4 sm:pb-8 sm:pt-4">
-						<div className="grid w-full max-w-[420px] grid-cols-2 gap-2 rounded-xl border border-amber-100/35 bg-black/35 p-2 backdrop-blur-sm">
+					<div className="absolute inset-x-0 bottom-0 flex flex-col items-center justify-end bg-gradient-to-t from-slate-950/95 via-slate-950/60 to-transparent p-4 pb-6 sm:p-6 sm:pb-8">
+						<div className="grid w-full max-w-[480px] grid-cols-2 gap-2 rounded-xl border border-amber-100/35 bg-black/45 p-2 backdrop-blur-sm">
 							<button
 								type="button"
 								onClick={() => onConferenceSelect("leyte")}
 								disabled={isSwitchingConference}
 								className={`rounded-lg px-3 py-2.5 text-sm font-extrabold uppercase tracking-[0.045em] transition sm:text-base ${
 									selectedConference === "leyte"
-										? "bg-amber-100 text-rose-950 ring-2 ring-amber-200/80"
-										: "border border-amber-200/35 bg-slate-900/55 text-amber-100 hover:bg-slate-800"
+										? "bg-amber-100 text-rose-950 shadow-[0_4px_12px_rgba(251,191,36,0.3)] ring-2 ring-amber-200/50"
+										: "text-amber-100 hover:bg-white/5 hover:text-white"
 								}`}
 							>
 								Leyte Conference
@@ -150,8 +162,8 @@ export default function Page() {
 								disabled={isSwitchingConference}
 								className={`rounded-lg px-3 py-2.5 text-sm font-extrabold uppercase tracking-[0.045em] transition sm:text-base ${
 									selectedConference === "cebu"
-										? "bg-amber-100 text-rose-950 ring-2 ring-amber-200/80"
-										: "border border-amber-200/35 bg-slate-900/55 text-amber-100 hover:bg-slate-800"
+										? "bg-amber-100 text-rose-950 shadow-[0_4px_12px_rgba(251,191,36,0.3)] ring-2 ring-amber-200/50"
+										: "text-amber-100 hover:bg-white/5 hover:text-white"
 								}`}
 							>
 								Cebu Conference
@@ -161,12 +173,12 @@ export default function Page() {
 				</article>
 
 				<article
-					className={`h-[min(716px,calc(100vh-2rem))] w-full max-w-[620px] overflow-y-auto rounded-3xl border border-amber-100/20 bg-[linear-gradient(170deg,rgba(48,23,24,0.86),rgba(20,31,56,0.88))] shadow-[0_16px_40px_rgba(5,13,26,0.45)] transition-all duration-300 ease-out lg:rounded-l-none ${
+					className={`h-auto lg:h-[min(716px,calc(100vh-2rem))] w-full max-w-[620px] overflow-y-auto rounded-3xl border border-amber-100/20 bg-[linear-gradient(170deg,rgba(48,23,24,0.86),rgba(20,31,56,0.88))] shadow-[0_16px_40px_rgba(5,13,26,0.45)] transition-all duration-300 ease-out lg:rounded-l-none ${
 						isSwitchingConference ? "translate-y-1 opacity-80" : "translate-y-0 opacity-100"
 					}`}
 				>
-					<div className="flex h-full flex-col gap-3 p-5 text-amber-50 sm:gap-3.5 sm:p-6">
-						<div className="flex justify-center">
+					<div className="flex h-full flex-col gap-4 p-5 text-amber-50 sm:gap-3.5 sm:p-6">
+						<div className="mb-2 flex justify-center lg:mb-0">
 							<img
 								src={churchLogo}
 								alt="Joyful Sound Church logo"
@@ -221,29 +233,42 @@ export default function Page() {
 						</div>
 
 						<div className="mt-1 flex flex-col-reverse gap-2">
-							<details className="register-toggle">
-								<summary className="cursor-pointer list-none rounded-xl bg-[linear-gradient(110deg,#f2be73,#d58147)] px-4 py-2.5 text-center text-[0.95rem] font-extrabold tracking-[0.04em] text-rose-950 shadow-[0_10px_18px_rgba(0,0,0,0.28)] transition hover:-translate-y-0.5 hover:shadow-[0_12px_22px_rgba(0,0,0,0.3)]">
-									Register Now
-								</summary>
-								<div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-									<a
-										href={`/register/individual?${conferenceQuery}`}
-										className="rounded-lg border border-amber-100/70 bg-amber-100 px-3 py-2.5 text-center text-[0.95rem] font-bold text-rose-950 transition hover:-translate-y-0.5 hover:bg-amber-50"
-									>
-										Individual Registration
-									</a>
-									<a
-										href={`/register/bulk?${conferenceQuery}`}
-										className="rounded-lg border border-indigo-200/60 bg-indigo-900/85 px-3 py-2.5 text-center text-[0.95rem] font-bold text-amber-50 transition hover:-translate-y-0.5 hover:bg-indigo-800"
-									>
-										Bulk Registration
-									</a>
+							{isRegistrationClosed ? (
+								<div className="rounded-xl border border-rose-200/35 bg-[linear-gradient(135deg,rgba(244,63,94,0.16),rgba(217,119,6,0.14),rgba(30,41,59,0.65))] p-4 text-center shadow-[0_10px_18px_rgba(0,0,0,0.28)]">
+									<p className="m-0 text-[1.05rem] font-extrabold tracking-[0.03em] text-amber-100 sm:text-[1.15rem]">
+										Registration Is Now Closed
+									</p>
+									<p className="mt-2 text-sm leading-relaxed text-amber-200">
+										Thank you for your overwhelming love and support. We are deeply grateful for everyone who registered,
+										and we pray this conference will be a blessing to all attendees.
+									</p>
 								</div>
-							</details>
+							) : (
+								<details className="register-toggle">
+									<summary className="cursor-pointer list-none rounded-xl bg-[linear-gradient(110deg,#f2be73,#d58147)] px-5 py-3.5 text-center text-[1.2rem] font-extrabold tracking-[0.04em] text-rose-950 shadow-[0_10px_18px_rgba(0,0,0,0.28)] transition hover:-translate-y-0.5 hover:shadow-[0_12px_22px_rgba(0,0,0,0.3)] sm:text-[1.28rem]">
+										Register Now
+									</summary>
+									<div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+										<a
+											href={`/register/individual?${conferenceQuery}`}
+											className="rounded-lg border border-amber-100/70 bg-amber-100 px-3 py-2.5 text-center text-[0.95rem] font-bold text-rose-950 transition hover:-translate-y-0.5 hover:bg-amber-50"
+										>
+											Individual Registration
+										</a>
+										<a
+											href={`/register/bulk?${conferenceQuery}`}
+											className="rounded-lg border border-indigo-200/60 bg-indigo-900/85 px-3 py-2.5 text-center text-[0.95rem] font-bold text-amber-50 transition hover:-translate-y-0.5 hover:bg-indigo-800"
+										>
+											Bulk Registration
+										</a>
+									</div>
+								</details>
+							)}
 							<LiveSlotsIndicator
 								initialAvailableSlots={conference.totalSlots}
 								totalSlots={conference.totalSlots}
 								conference={conference.key}
+								onAvailabilityChange={onSlotsAvailabilityChange}
 							/>
 						</div>
 					</div>
