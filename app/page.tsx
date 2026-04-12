@@ -182,7 +182,7 @@ export default function Page() {
 							<img
 								src={churchLogo}
 								alt="Joyful Sound Church logo"
-								className="max-h-[70px] max-w-[70px] object-contain drop-shadow-[0_6px_16px_rgba(0,0,0,0.45)] sm:max-h-[80px] sm:max-w-[80px]"
+								className="logo-float max-h-[70px] max-w-[70px] object-contain drop-shadow-[0_6px_16px_rgba(0,0,0,0.45)] sm:max-h-[80px] sm:max-w-[80px]"
 							/>
 						</div>
 						<p className="m-0 text-center text-[0.8rem] font-bold uppercase tracking-[0.08em] text-amber-300 sm:text-[0.86rem]">

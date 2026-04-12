@@ -570,6 +570,7 @@ const ministryOptions = [
   "Deacons",
   "Media Team",
   "Dance",
+  "Others",
 ];
 
 function normalizeMinistry(value: string) {
@@ -578,6 +579,27 @@ function normalizeMinistry(value: string) {
 
   const matched = ministryOptions.find((option) => option.toLowerCase() === trimmed.toLowerCase());
   return matched ?? trimmed;
+}
+
+function getMinistrySelectValue(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+
+  return ministryOptions.includes(trimmed) ? trimmed : "Others";
+}
+
+function getCustomMinistryValue(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed || ministryOptions.includes(trimmed)) return "";
+
+  return trimmed;
+}
+
+function resolveMinistryValue(selectedValue: string, customValue: string) {
+  if (selectedValue !== "Others") return selectedValue;
+
+  const trimmedCustom = customValue.trim();
+  return trimmedCustom || "Others";
 }
 
 function normalizeHeader(value: string) {
@@ -1360,7 +1382,7 @@ export default function BulkRegistrationPage() {
                   <label className="grid gap-1">
                     <span className="text-xs">Ministry *</span>
                     <select
-                      value={manualContactDetails.ministry}
+                      value={getMinistrySelectValue(manualContactDetails.ministry)}
                       onChange={(event) => updateManualContactDetails("ministry", event.target.value)}
                       className="rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-sm text-amber-100 [color-scheme:dark]"
                     >
@@ -1371,6 +1393,19 @@ export default function BulkRegistrationPage() {
                         </option>
                       ))}
                     </select>
+                    {getMinistrySelectValue(manualContactDetails.ministry) === "Others" ? (
+                      <input
+                        value={getCustomMinistryValue(manualContactDetails.ministry)}
+                        onChange={(event) =>
+                          updateManualContactDetails(
+                            "ministry",
+                            resolveMinistryValue("Others", event.target.value),
+                          )
+                        }
+                        placeholder="Please Specify (Optional)"
+                        className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 text-sm"
+                      />
+                    ) : null}
                   </label>
                   <CascadingAddressField
                     idPrefix="manual-contact"
@@ -1421,7 +1456,7 @@ export default function BulkRegistrationPage() {
                     <label className="grid gap-1">
                       <span className="text-xs">Ministry *</span>
                       <select
-                        value={manualAttendeeDraft.ministry}
+                        value={getMinistrySelectValue(manualAttendeeDraft.ministry)}
                         onChange={(event) => updateManualAttendeeDraft("ministry", event.target.value)}
                         className="rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-sm text-amber-100 [color-scheme:dark]"
                       >
@@ -1432,6 +1467,19 @@ export default function BulkRegistrationPage() {
                           </option>
                         ))}
                       </select>
+                      {getMinistrySelectValue(manualAttendeeDraft.ministry) === "Others" ? (
+                        <input
+                          value={getCustomMinistryValue(manualAttendeeDraft.ministry)}
+                          onChange={(event) =>
+                            updateManualAttendeeDraft(
+                              "ministry",
+                              resolveMinistryValue("Others", event.target.value),
+                            )
+                          }
+                          placeholder="Please Specify (Optional)"
+                          className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 text-sm"
+                        />
+                      ) : null}
                     </label>
 
                     <label className="grid gap-1">
@@ -1517,7 +1565,7 @@ export default function BulkRegistrationPage() {
                             </td>
                             <td className="p-1">
                               <select
-                                value={row.ministry}
+                                value={getMinistrySelectValue(row.ministry)}
                                 onChange={(event) => updateManualRow(index, "ministry", event.target.value)}
                                 className="w-full rounded-md border border-amber-100/30 bg-slate-950 px-2 py-1 text-amber-100 [color-scheme:dark]"
                               >
@@ -1528,6 +1576,20 @@ export default function BulkRegistrationPage() {
                                   </option>
                                 ))}
                               </select>
+                              {getMinistrySelectValue(row.ministry) === "Others" ? (
+                                <input
+                                  value={getCustomMinistryValue(row.ministry)}
+                                  onChange={(event) =>
+                                    updateManualRow(
+                                      index,
+                                      "ministry",
+                                      resolveMinistryValue("Others", event.target.value),
+                                    )
+                                  }
+                                  placeholder="Please Specify (Optional)"
+                                  className="mt-1 w-full rounded-md border border-amber-100/30 bg-slate-950/40 px-2 py-1"
+                                />
+                              ) : null}
                             </td>
                             <td className="p-1">
                               <input
@@ -1628,7 +1690,7 @@ export default function BulkRegistrationPage() {
                       <label className="grid gap-1">
                         <span className="text-xs">Ministry *</span>
                         <select
-                          value={excelLeadDetails.ministry}
+                          value={getMinistrySelectValue(excelLeadDetails.ministry)}
                           onChange={(event) => updateExcelLeadDetails("ministry", event.target.value)}
                           className="rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-sm text-amber-100 [color-scheme:dark]"
                         >
@@ -1639,6 +1701,16 @@ export default function BulkRegistrationPage() {
                             </option>
                           ))}
                         </select>
+                        {getMinistrySelectValue(excelLeadDetails.ministry) === "Others" ? (
+                          <input
+                            value={getCustomMinistryValue(excelLeadDetails.ministry)}
+                            onChange={(event) =>
+                              updateExcelLeadDetails("ministry", resolveMinistryValue("Others", event.target.value))
+                            }
+                            placeholder="Please Specify (Optional)"
+                            className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 text-sm"
+                          />
+                        ) : null}
                       </label>
                       <CascadingAddressField
                         idPrefix="excel-lead"
@@ -1765,20 +1837,31 @@ export default function BulkRegistrationPage() {
                                 </td>
                                 <td className="p-1">
                                   <select
-                                    value={row.ministry}
+                                    value={getMinistrySelectValue(row.ministry)}
                                     onChange={(event) => updateImportedRow(index, "ministry", event.target.value)}
                                     className="w-full rounded-md border border-amber-100/30 bg-slate-950 px-2 py-1 text-amber-100 [color-scheme:dark]"
                                   >
                                     <option value="">Select ministry</option>
-                                    {row.ministry && !ministryOptions.includes(row.ministry) ? (
-                                      <option value={row.ministry}>{row.ministry}</option>
-                                    ) : null}
                                     {ministryOptions.map((option) => (
                                       <option key={option} value={option}>
                                         {option}
                                       </option>
                                     ))}
                                   </select>
+                                  {getMinistrySelectValue(row.ministry) === "Others" ? (
+                                    <input
+                                      value={getCustomMinistryValue(row.ministry)}
+                                      onChange={(event) =>
+                                        updateImportedRow(
+                                          index,
+                                          "ministry",
+                                          resolveMinistryValue("Others", event.target.value),
+                                        )
+                                      }
+                                      placeholder="Please Specify (Optional)"
+                                      className="mt-1 w-full rounded-md border border-amber-100/30 bg-slate-950/40 px-2 py-1"
+                                    />
+                                  ) : null}
                                 </td>
                                 <td className="p-1">
                                   <input
@@ -1885,7 +1968,7 @@ export default function BulkRegistrationPage() {
                     <label className="grid gap-1">
                       <span className="text-xs">Ministry *</span>
                       <select
-                        value={imageLeadDetails.ministry}
+                        value={getMinistrySelectValue(imageLeadDetails.ministry)}
                         onChange={(event) => updateImageLeadDetails("ministry", event.target.value)}
                         className="rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-sm text-amber-100 [color-scheme:dark]"
                       >
@@ -1896,6 +1979,16 @@ export default function BulkRegistrationPage() {
                           </option>
                         ))}
                       </select>
+                      {getMinistrySelectValue(imageLeadDetails.ministry) === "Others" ? (
+                        <input
+                          value={getCustomMinistryValue(imageLeadDetails.ministry)}
+                          onChange={(event) =>
+                            updateImageLeadDetails("ministry", resolveMinistryValue("Others", event.target.value))
+                          }
+                          placeholder="Please Specify (Optional)"
+                          className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 text-sm"
+                        />
+                      ) : null}
                     </label>
                     <label className="grid gap-1">
                       <span className="text-xs">Local Church Pastor *</span>
@@ -1923,7 +2016,7 @@ export default function BulkRegistrationPage() {
                       <label className="grid gap-1">
                         <span className="text-xs">Ministry *</span>
                         <select
-                          value={excelLeadDetails.ministry}
+                          value={getMinistrySelectValue(excelLeadDetails.ministry)}
                           onChange={(event) => updateExcelLeadDetails("ministry", event.target.value)}
                           className="rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-sm text-amber-100 [color-scheme:dark]"
                         >
@@ -1934,6 +2027,16 @@ export default function BulkRegistrationPage() {
                             </option>
                           ))}
                         </select>
+                        {getMinistrySelectValue(excelLeadDetails.ministry) === "Others" ? (
+                          <input
+                            value={getCustomMinistryValue(excelLeadDetails.ministry)}
+                            onChange={(event) =>
+                              updateExcelLeadDetails("ministry", resolveMinistryValue("Others", event.target.value))
+                            }
+                            placeholder="Please Specify (Optional)"
+                            className="rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2 text-sm"
+                          />
+                        ) : null}
                       </label>
                     <label
                       className={`inline-block rounded-lg border px-3 py-2 text-sm font-semibold ${
@@ -2008,20 +2111,31 @@ export default function BulkRegistrationPage() {
                               </td>
                               <td className="p-1">
                                 <select
-                                  value={row.ministry}
+                                  value={getMinistrySelectValue(row.ministry)}
                                   onChange={(event) => updateImageRow(index, "ministry", event.target.value)}
                                   className="w-full rounded-md border border-amber-100/30 bg-slate-950 px-2 py-1 text-amber-100 [color-scheme:dark]"
                                 >
                                   <option value="">Select ministry</option>
-                                  {row.ministry && !ministryOptions.includes(row.ministry) ? (
-                                    <option value={row.ministry}>{row.ministry}</option>
-                                  ) : null}
                                   {ministryOptions.map((option) => (
                                     <option key={option} value={option}>
                                       {option}
                                     </option>
                                   ))}
                                 </select>
+                                {getMinistrySelectValue(row.ministry) === "Others" ? (
+                                  <input
+                                    value={getCustomMinistryValue(row.ministry)}
+                                    onChange={(event) =>
+                                      updateImageRow(
+                                        index,
+                                        "ministry",
+                                        resolveMinistryValue("Others", event.target.value),
+                                      )
+                                    }
+                                    placeholder="Please Specify (Optional)"
+                                    className="mt-1 w-full rounded-md border border-amber-100/30 bg-slate-950/40 px-2 py-1"
+                                  />
+                                ) : null}
                               </td>
                               <td className="p-1">
                                 <input
