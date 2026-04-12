@@ -50,6 +50,8 @@ export default function IndividualRegistrationPage() {
   const [selectedBarangayCode, setSelectedBarangayCode] = useState("");
   const [selectedBarangay, setSelectedBarangay] = useState("");
   const [addressDetails, setAddressDetails] = useState("");
+  const [selectedMinistry, setSelectedMinistry] = useState("");
+  const [customMinistry, setCustomMinistry] = useState("");
   const [municipalityOptions, setMunicipalityOptions] = useState<PsgcLocation[]>([]);
   const [barangayOptions, setBarangayOptions] = useState<PsgcLocation[]>([]);
   const [isLoadingMunicipalities, setIsLoadingMunicipalities] = useState(false);
@@ -198,10 +200,14 @@ export default function IndividualRegistrationPage() {
     setStatus("");
 
     const formData = new FormData(event.currentTarget);
+    const selectedMinistryValue = String(formData.get("ministry") ?? "").trim();
+    const customMinistryValue = String(formData.get("ministryOther") ?? "").trim();
+    const ministryValue = selectedMinistryValue === "Others" ? customMinistryValue || "Others" : selectedMinistryValue;
+
     const payload: IndividualPayload = {
       name: String(formData.get("name") ?? ""),
       church: church,
-      ministry: String(formData.get("ministry") ?? ""),
+      ministry: ministryValue,
       address: computedAddress,
       localChurchPastor: `Pastor ${String(formData.get("localChurchPastorNameOnly") ?? "").trim()}`,
       phoneNumber: String(formData.get("phoneNumber") ?? ""),
@@ -245,6 +251,8 @@ export default function IndividualRegistrationPage() {
     setSelectedBarangayCode("");
     setSelectedBarangay("");
     setAddressDetails("");
+    setSelectedMinistry("");
+    setCustomMinistry("");
     setAddressError("");
     setPendingPayload(null);
     setShowConfirmModal(false);
@@ -319,7 +327,14 @@ export default function IndividualRegistrationPage() {
             <select
               name="ministry"
               required
-              defaultValue=""
+              value={selectedMinistry}
+              onChange={(event) => {
+                const nextValue = event.target.value;
+                setSelectedMinistry(nextValue);
+                if (nextValue !== "Others") {
+                  setCustomMinistry("");
+                }
+              }}
               className="w-full max-w-full rounded-lg border border-amber-100/30 bg-slate-950 px-3 py-2 text-amber-100 [color-scheme:dark] focus:outline-none focus:ring-2 focus:ring-amber-300/40"
             >
               <option value="" disabled>
@@ -334,7 +349,17 @@ export default function IndividualRegistrationPage() {
               <option value="Deacons">Deacons</option>
               <option value="Media Team">Media Team</option>
               <option value="Dance">Dance</option>
+              <option value="Others">Others</option>
             </select>
+            {selectedMinistry === "Others" ? (
+              <input
+                name="ministryOther"
+                value={customMinistry}
+                onChange={(event) => setCustomMinistry(event.target.value)}
+                placeholder="Please Specify (Optional)"
+                className="w-full max-w-full rounded-lg border border-amber-100/30 bg-slate-950/40 px-3 py-2"
+              />
+            ) : null}
           </label>
 
           <label className="grid gap-1">

@@ -15,3 +15,24 @@ body {
 .register-toggle[open] + .slots-indicator-display {
   display: none;
 }
+
+@keyframes logo-float {
+  0%,
+  100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+.logo-float {
+  animation: logo-float 3.2s ease-in-out infinite;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .logo-float {
+    animation: none;
+  }
+}
