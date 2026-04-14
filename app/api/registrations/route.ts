@@ -50,7 +50,7 @@ type BulkAttendeeInsert = {
 
 const conferenceTotals: Record<"leyte" | "cebu", number> = {
   leyte: 100,
-  cebu: 150,
+  cebu: 100,
 };
 
 function normalizeConference(input: string | null | undefined): "leyte" | "cebu" {
@@ -169,6 +169,25 @@ function parseAttendeeNames(attendeeNames: string) {
     .split(/\r?\n|,/)
     .map((name) => normalizePersonName(name))
     .filter(Boolean);
+}
+
+function includeContactInAttendeeNames(contactName: string, attendeeNames: string[]) {
+  const orderedNames = [normalizePersonName(contactName), ...attendeeNames.map((name) => normalizePersonName(name))];
+  const seen = new Set<string>();
+  const merged: string[] = [];
+
+  for (const name of orderedNames) {
+    const normalized = normalizePersonName(name);
+    if (!normalized) continue;
+
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    merged.push(normalized);
+  }
+
+  return merged;
 }
 
 function normalizeImportedRows(rows: ImportedRow[]) {
@@ -337,7 +356,6 @@ export async function GET(request: Request) {
       attendee_local_church_pastor?: string;
     };
 
-    const namesByBulkId = new Map<string, string[]>();
     const attendeesByBulkId = new Map<string, LinkedAttendeeRow[]>();
     for (const row of linkedAttendees ?? []) {
       const bulkId = String((row as { bulk_registration_id?: string }).bulk_registration_id ?? "");
@@ -355,26 +373,59 @@ export async function GET(request: Request) {
           String((row as { attendee_local_church_pastor?: string }).attendee_local_church_pastor ?? "").trim() || undefined,
       };
 
-      const list = namesByBulkId.get(bulkId) ?? [];
-      list.push(attendeeName);
-      namesByBulkId.set(bulkId, list);
-
       const detailedList = attendeesByBulkId.get(bulkId) ?? [];
       detailedList.push(detailedRow);
       attendeesByBulkId.set(bulkId, detailedList);
     }
 
     const mergedBulkRows = bulkRows.map((row) => {
-      const linkedNames = namesByBulkId.get(row.id) ?? [];
-      if (!linkedNames.length) {
-        return row;
+      const contactName = normalizePersonName(row.contact_name);
+      const linkedRowsForBulk = attendeesByBulkId.get(row.id) ?? [];
+
+      if (linkedRowsForBulk.length) {
+        const mergedLinkedAttendees: LinkedAttendeeRow[] = [];
+        const seen = new Set<string>();
+        const candidates: LinkedAttendeeRow[] = [
+          {
+            bulk_registration_id: row.id,
+            attendee_name: contactName,
+            attendee_phone: row.phone_number,
+            attendee_ministry: row.ministry,
+            attendee_church: row.church,
+            attendee_address: row.address,
+            attendee_local_church_pastor: row.local_church_pastor,
+          },
+          ...linkedRowsForBulk,
+        ];
+
+        for (const attendee of candidates) {
+          const normalizedName = normalizePersonName(attendee.attendee_name);
+          if (!normalizedName) continue;
+
+          const key = normalizedName.toLowerCase();
+          if (seen.has(key)) continue;
+
+          seen.add(key);
+          mergedLinkedAttendees.push({
+            ...attendee,
+            attendee_name: normalizedName,
+          });
+        }
+
+        const attendeeNames = mergedLinkedAttendees.map((attendee) => attendee.attendee_name);
+        return {
+          ...row,
+          attendee_count: attendeeNames.length,
+          attendee_names: attendeeNames.join("\n"),
+          linked_attendees: mergedLinkedAttendees,
+        };
       }
 
+      const attendeeNames = includeContactInAttendeeNames(contactName, parseAttendeeNames(row.attendee_names));
       return {
         ...row,
-        attendee_count: linkedNames.length,
-        attendee_names: linkedNames.join("\n"),
-        linked_attendees: attendeesByBulkId.get(row.id) ?? [],
+        attendee_count: attendeeNames.length,
+        attendee_names: attendeeNames.join("\n"),
       };
     });
 
@@ -570,7 +621,10 @@ export async function POST(request: Request) {
     });
     const duplicateInFileCount = normalizedRows.length - dedupedRows.length;
 
-    const attendeeNames = dedupedRows.map((row) => row.fullName);
+    const attendeeNames = includeContactInAttendeeNames(
+      contactName,
+      dedupedRows.map((row) => row.fullName),
+    );
     const capacityCheck = await ensureConferenceCapacity(supabase, conference, attendeeNames.length);
     if (!capacityCheck.ok) {
       return NextResponse.json({ error: capacityCheck.error }, { status: capacityCheck.status });
@@ -605,15 +659,31 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: insertBulkError.message }, { status: 500 });
     }
 
-    const linkedRows: BulkAttendeeInsert[] = dedupedRows.map((row) => ({
-      bulk_registration_id: insertedBulkRow.id,
-      attendee_name: row.fullName,
-      attendee_phone: row.phoneNumber,
-      attendee_ministry: row.ministry,
-      attendee_church: row.church,
-      attendee_address: row.address,
-      attendee_local_church_pastor: row.localChurchPastor,
-    }));
+    const contactKey = contactName.toLowerCase();
+    const attendeeRowsWithoutContact = dedupedRows.filter(
+      (row) => normalizePersonName(row.fullName).toLowerCase() !== contactKey,
+    );
+
+    const linkedRows: BulkAttendeeInsert[] = [
+      {
+        bulk_registration_id: insertedBulkRow.id,
+        attendee_name: contactName,
+        attendee_phone: phoneNumber,
+        attendee_ministry: ministry,
+        attendee_church: church,
+        attendee_address: address,
+        attendee_local_church_pastor: localChurchPastor,
+      },
+      ...attendeeRowsWithoutContact.map((row) => ({
+        bulk_registration_id: insertedBulkRow.id,
+        attendee_name: row.fullName,
+        attendee_phone: row.phoneNumber,
+        attendee_ministry: row.ministry,
+        attendee_church: row.church,
+        attendee_address: row.address,
+        attendee_local_church_pastor: row.localChurchPastor,
+      })),
+    ];
 
     const replaceLinkedError = await replaceBulkAttendees(supabase, insertedBulkRow.id, linkedRows, false);
     if (replaceLinkedError) {
@@ -675,7 +745,16 @@ export async function POST(request: Request) {
   }
 
   const bulkPayload = body.payload as BulkFormPayload;
-  const attendeeNames = parseAttendeeNames(payload.attendeeNames);
+  const contactName = normalizePersonName(payload.contactName);
+  const church = String(payload.church ?? "").trim();
+  const ministry = String(payload.ministry ?? "").trim();
+  const address = String(payload.address ?? "").trim();
+  const localChurchPastor = normalizePersonName(String(payload.localChurchPastor ?? ""));
+  const phoneNumber = String(payload.phoneNumber ?? "").trim();
+  const attendeeNames = includeContactInAttendeeNames(
+    contactName,
+    parseAttendeeNames(payload.attendeeNames),
+  );
   const providedAttendeeRows = Array.isArray(bulkPayload.attendeeRows)
     ? normalizeImportedRows(bulkPayload.attendeeRows)
     : [];
@@ -705,12 +784,12 @@ export async function POST(request: Request) {
   const { data: insertedBulkRow, error } = await supabase
     .from("bulk_registrations")
     .insert({
-      contact_name: normalizePersonName(payload.contactName),
-      church: payload.church,
-      ministry: payload.ministry,
-      address: payload.address,
-      local_church_pastor: normalizePersonName(payload.localChurchPastor),
-      phone_number: payload.phoneNumber,
+      contact_name: contactName,
+      church,
+      ministry,
+      address,
+      local_church_pastor: localChurchPastor,
+      phone_number: phoneNumber,
       attendee_count: attendeeNames.length,
       attendee_names: attendeeNames.join("\n"),
       conference,
@@ -731,20 +810,42 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
+  const contactKey = contactName.toLowerCase();
   const linkedRows: BulkAttendeeInsert[] = providedAttendeeRows.length
-    ? providedAttendeeRows.map((row) => ({
-        bulk_registration_id: insertedBulkRow.id,
-        attendee_name: row.fullName,
-        attendee_phone: row.phoneNumber,
-        attendee_ministry: row.ministry,
-        attendee_church: row.church,
-        attendee_address: row.address,
-        attendee_local_church_pastor: row.localChurchPastor,
-      }))
-    : attendeeNames.map((attendeeName) => ({
-        bulk_registration_id: insertedBulkRow.id,
-        attendee_name: attendeeName,
-      }));
+    ? [
+        {
+          bulk_registration_id: insertedBulkRow.id,
+          attendee_name: contactName,
+          attendee_phone: phoneNumber,
+          attendee_ministry: ministry,
+          attendee_church: church,
+          attendee_address: address,
+          attendee_local_church_pastor: localChurchPastor,
+        },
+        ...providedAttendeeRows
+          .filter((row) => normalizePersonName(row.fullName).toLowerCase() !== contactKey)
+          .map((row) => ({
+            bulk_registration_id: insertedBulkRow.id,
+            attendee_name: row.fullName,
+            attendee_phone: row.phoneNumber,
+            attendee_ministry: row.ministry,
+            attendee_church: row.church,
+            attendee_address: row.address,
+            attendee_local_church_pastor: row.localChurchPastor,
+          })),
+      ]
+    : attendeeNames.map((attendeeName) => {
+        const isContact = attendeeName.toLowerCase() === contactKey;
+        return {
+          bulk_registration_id: insertedBulkRow.id,
+          attendee_name: attendeeName,
+          attendee_phone: isContact ? phoneNumber : undefined,
+          attendee_ministry: isContact ? ministry : undefined,
+          attendee_church: isContact ? church : undefined,
+          attendee_address: isContact ? address : undefined,
+          attendee_local_church_pastor: isContact ? localChurchPastor : undefined,
+        };
+      });
 
   const replaceLinkedError = await replaceBulkAttendees(supabase, insertedBulkRow.id, linkedRows, false);
   if (replaceLinkedError) {
@@ -843,7 +944,16 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: "attendeeCount must be a positive number." }, { status: 400 });
   }
 
-  const attendeeNames = parseAttendeeNames(String(payload.attendeeNames ?? "").trim());
+  const contactName = normalizePersonName(String(payload.contactName ?? ""));
+  const church = String(payload.church ?? "").trim();
+  const ministry = String(payload.ministry ?? "").trim();
+  const address = String(payload.address ?? "").trim();
+  const localChurchPastor = normalizePersonName(String(payload.localChurchPastor ?? ""));
+  const phoneNumber = String(payload.phoneNumber ?? "").trim();
+  const attendeeNames = includeContactInAttendeeNames(
+    contactName,
+    parseAttendeeNames(String(payload.attendeeNames ?? "").trim()),
+  );
   const providedAttendeeRows = Array.isArray((payload as BulkFormPayload).attendeeRows)
     ? normalizeImportedRows((payload as BulkFormPayload).attendeeRows ?? [])
     : [];
@@ -867,12 +977,12 @@ export async function PATCH(request: Request) {
   const { error } = await supabaseAdmin
     .from("bulk_registrations")
     .update({
-      contact_name: normalizePersonName(String(payload.contactName ?? "")),
-      church: String(payload.church ?? "").trim(),
-      ministry: String(payload.ministry ?? "").trim(),
-      address: String(payload.address ?? "").trim(),
-      local_church_pastor: normalizePersonName(String(payload.localChurchPastor ?? "")),
-      phone_number: String(payload.phoneNumber ?? "").trim(),
+      contact_name: contactName,
+      church,
+      ministry,
+      address,
+      local_church_pastor: localChurchPastor,
+      phone_number: phoneNumber,
       attendee_count: attendeeNames.length,
       attendee_names: attendeeNames.join("\n"),
     })
@@ -885,15 +995,29 @@ export async function PATCH(request: Request) {
   let linkedRows: BulkAttendeeInsert[];
 
   if (providedAttendeeRows.length) {
-    linkedRows = providedAttendeeRows.map((row) => ({
-      bulk_registration_id: id,
-      attendee_name: row.fullName,
-      attendee_phone: row.phoneNumber,
-      attendee_ministry: row.ministry,
-      attendee_church: row.church,
-      attendee_address: row.address,
-      attendee_local_church_pastor: row.localChurchPastor,
-    }));
+    const contactKey = contactName.toLowerCase();
+    linkedRows = [
+      {
+        bulk_registration_id: id,
+        attendee_name: contactName,
+        attendee_phone: phoneNumber,
+        attendee_ministry: ministry,
+        attendee_church: church,
+        attendee_address: address,
+        attendee_local_church_pastor: localChurchPastor,
+      },
+      ...providedAttendeeRows
+        .filter((row) => normalizePersonName(row.fullName).toLowerCase() !== contactKey)
+        .map((row) => ({
+          bulk_registration_id: id,
+          attendee_name: row.fullName,
+          attendee_phone: row.phoneNumber,
+          attendee_ministry: row.ministry,
+          attendee_church: row.church,
+          attendee_address: row.address,
+          attendee_local_church_pastor: row.localChurchPastor,
+        })),
+    ];
   } else {
     const { data: existingLinkedRows } = await (supabaseAdmin as any)
       .from("bulk_registration_attendees")
@@ -915,6 +1039,7 @@ export async function PATCH(request: Request) {
       : [];
 
     linkedRows = attendeeNames.map((attendeeName, index) => {
+      const isContact = attendeeName.toLowerCase() === contactName.toLowerCase();
       const existing =
         existingRows[index] ??
         existingRows.find(
@@ -923,11 +1048,12 @@ export async function PATCH(request: Request) {
       return {
         bulk_registration_id: id,
         attendee_name: attendeeName,
-        attendee_phone: String(existing?.attendee_phone ?? "").trim() || undefined,
-        attendee_ministry: String(existing?.attendee_ministry ?? "").trim() || undefined,
-        attendee_church: String(existing?.attendee_church ?? "").trim() || undefined,
-        attendee_address: String(existing?.attendee_address ?? "").trim() || undefined,
-        attendee_local_church_pastor: String(existing?.attendee_local_church_pastor ?? "").trim() || undefined,
+        attendee_phone: isContact ? phoneNumber : String(existing?.attendee_phone ?? "").trim() || undefined,
+        attendee_ministry: isContact ? ministry : String(existing?.attendee_ministry ?? "").trim() || undefined,
+        attendee_church: isContact ? church : String(existing?.attendee_church ?? "").trim() || undefined,
+        attendee_address: isContact ? address : String(existing?.attendee_address ?? "").trim() || undefined,
+        attendee_local_church_pastor:
+          isContact ? localChurchPastor : String(existing?.attendee_local_church_pastor ?? "").trim() || undefined,
       };
     });
   }

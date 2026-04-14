@@ -648,6 +648,22 @@ function blankImageLeadDetails(): ImageLeadDetails {
   };
 }
 
+function buildRegisteredAttendeeList(contactName: string, attendees: string[]) {
+  const orderedNames = [contactName.trim(), ...attendees.map((name) => name.trim())];
+  const seen = new Set<string>();
+  const merged: string[] = [];
+
+  for (const name of orderedNames) {
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(name);
+  }
+
+  return merged;
+}
+
 export default function BulkRegistrationPage() {
   const [conference, setConference] = useState<"leyte" | "cebu">("leyte");
   useEffect(() => {
@@ -1005,7 +1021,10 @@ export default function BulkRegistrationPage() {
       address: excelLeadDetails.address,
       localChurchPastor: `Pastor ${excelLeadDetails.localChurchPastor.trim()}`,
       phoneNumber: excelLeadDetails.phoneNumber,
-      attendees: importedRows.map((row) => row.fullName),
+      attendees: buildRegisteredAttendeeList(
+        excelLeadDetails.contactName,
+        importedRows.map((row) => row.fullName),
+      ),
     });
     setShowConfirmModal(true);
   }
@@ -1120,7 +1139,10 @@ export default function BulkRegistrationPage() {
       address: manualContactDetails.address,
       localChurchPastor: manualContactDetails.localChurchPastor,
       phoneNumber: manualContactDetails.phoneNumber,
-      attendees: manualRows.map((row) => row.fullName),
+      attendees: buildRegisteredAttendeeList(
+        manualContactDetails.contactName,
+        manualRows.map((row) => row.fullName),
+      ),
     });
     setShowConfirmModal(true);
   }
@@ -1252,7 +1274,10 @@ export default function BulkRegistrationPage() {
       address: imageLeadDetails.address,
       localChurchPastor: `Pastor ${imageLeadDetails.localChurchPastor.trim()}`,
       phoneNumber: imageLeadDetails.phoneNumber,
-      attendees: imageRows.map((row) => row.fullName),
+      attendees: buildRegisteredAttendeeList(
+        imageLeadDetails.contactName,
+        imageRows.map((row) => row.fullName),
+      ),
     });
     setShowConfirmModal(true);
   }
@@ -2257,7 +2282,7 @@ export default function BulkRegistrationPage() {
               </div>
 
               <div className="mt-3 rounded-lg border border-amber-100/20 bg-black/15 p-3">
-                <p className="m-0 text-sm font-semibold text-amber-300">Attendees Added: {pendingConfirmation.attendees.length}</p>
+                <p className="m-0 text-sm font-semibold text-amber-300">Total Registered (including contact person): {pendingConfirmation.attendees.length}</p>
                 <div className="mt-2 max-h-44 overflow-y-auto rounded-md border border-amber-100/15 bg-slate-950/40 p-2 text-sm">
                   {pendingConfirmation.attendees.length ? (
                     <ul className="m-0 list-disc space-y-1 pl-4 text-amber-100">

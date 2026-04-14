@@ -866,19 +866,20 @@ export default function AdminPage() {
                   <span className="text-sm font-bold tracking-wide text-amber-100/90 uppercase">Secured Admin Access Code</span>
                   <div className="mt-5 flex justify-center gap-3 md:gap-4" onPaste={onAccessCodePaste}>
                     {adminAccessDigits.map((digit, index) => (
-                      <input
-                        key={`admin-code-${index}`}
-                        ref={(element) => {
-                          adminCodeInputRefs.current[index] = element;
-                        }}
-                        inputMode="numeric"
-                        maxLength={1}
-                        value={digit}
-                        onChange={(event) => onAccessDigitChange(index, event.target.value)}
-                        onKeyDown={(event) => onAccessDigitKeyDown(index, event)}
-                        className="w-16 h-16 md:w-20 md:h-20 rounded-xl border-2 border-amber-100/20 bg-slate-950/60 px-0 py-2 text-center text-3xl font-extrabold text-amber-100 shadow-inner focus:border-amber-400/50 focus:outline-none transition-all"
-                        aria-label={`Admin code digit ${index + 1}`}
-                      />
+                        <input
+                          key={`admin-code-${index}`}
+                          ref={(element) => {
+                            adminCodeInputRefs.current[index] = element;
+                          }}
+                          type="password"
+                          inputMode="numeric"
+                          maxLength={1}
+                          value={digit}
+                          onChange={(event) => onAccessDigitChange(index, event.target.value)}
+                          onKeyDown={(event) => onAccessDigitKeyDown(index, event)}
+                          className="w-16 h-16 md:w-20 md:h-20 rounded-xl border-2 border-amber-100/20 bg-slate-950/60 px-0 py-2 text-center text-3xl font-extrabold text-amber-100 shadow-inner focus:border-amber-400/50 focus:outline-none transition-all"
+                          aria-label={`Admin code digit ${index + 1}`}
+                        />
                     ))}
                   </div>
                 </div>

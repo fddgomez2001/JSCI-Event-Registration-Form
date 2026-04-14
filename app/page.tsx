@@ -34,7 +34,7 @@ const conferenceConfigs: Record<ConferenceKey, ConferenceConfig> = {
 		bannerImage:
 			`https://oilbgqmzxltdrksiypfi.supabase.co/storage/v1/object/public/Logo/assets/CEBU_Empowered_With_Purpose.png?v=${imageVersion}`,
 		registrationTitle: "REGISTRATION FORM: CEBU CHRISTIAN LEADERSHIP CONFERENCE 2026",
-		totalSlots: 150,
+		totalSlots: 100,
 		emailSubject: "Cebu Christian Leadership Conference 2026 Inquiry",
 	},
 };
