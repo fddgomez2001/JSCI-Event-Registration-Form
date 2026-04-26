@@ -29,6 +29,7 @@ type IndividualRow = {
   address: string;
   local_church_pastor: string;
   phone_number: string;
+  added_by_admin?: boolean;
   conference: Conference;
   created_at: string;
 };
@@ -43,6 +44,7 @@ type BulkRow = {
   phone_number: string;
   attendee_count: number;
   attendee_names: string;
+  added_by_admin?: boolean;
   linked_attendees?: Array<{
     attendee_name: string;
     attendee_phone?: string;
@@ -74,6 +76,7 @@ type AdminRecord = {
   id: string;
   sourceType: RegistrationSource;
   sourceLabel: "Individual" | "Bulk";
+  addedByAdmin: boolean;
   name: string;
   contactPerson: string;
   church: string;
@@ -96,6 +99,28 @@ type EditFormState = {
   phone: string;
   attendees: string;
   attendeeNames: string;
+};
+
+type AdminBulkFormState = {
+  attendeeRows: Array<{
+    fullName: string;
+    phoneNumber: string;
+  }>;
+  church: string;
+  ministry: string;
+  address: string;
+  pastor: string;
+  phone: string;
+  attendeeNames: string;
+};
+
+type AdminIndividualFormState = {
+  name: string;
+  church: string;
+  ministry: string;
+  address: string;
+  pastor: string;
+  phone: string;
 };
 
 type AdminCodeFormState = {
@@ -128,6 +153,7 @@ type ExportColumn = {
 
 const ADMIN_USERNAME = "admin";
 const ADMIN_PASSWORD = "Admin@123!";
+const ADMIN_BULK_CONTACT_LABEL = "added by admin";
 const ROWS_PER_PAGE = 15;
 const EXPORT_TITLE = "Registration Report";
 
@@ -154,6 +180,25 @@ const defaultEditForm: EditFormState = {
   phone: "",
   attendees: "1",
   attendeeNames: "",
+};
+
+const defaultAdminBulkForm: AdminBulkFormState = {
+  attendeeRows: [{ fullName: "", phoneNumber: "" }],
+  church: "",
+  ministry: "",
+  address: "",
+  pastor: "",
+  phone: "",
+  attendeeNames: "",
+};
+
+const defaultAdminIndividualForm: AdminIndividualFormState = {
+  name: "",
+  church: "",
+  ministry: "",
+  address: "",
+  pastor: "",
+  phone: "",
 };
 
 const defaultCodeForm: AdminCodeFormState = {
@@ -207,6 +252,10 @@ function formatDate(value: string) {
 
 function conferenceLabel(conference: Conference) {
   return conference === "cebu" ? "CEBU Conference" : "LEYTE Conference";
+}
+
+function isAdminAddedBulkContactName(value: string) {
+  return value.trim().toLowerCase() === ADMIN_BULK_CONTACT_LABEL;
 }
 
 function clampPage(page: number, totalPages: number) {
@@ -296,10 +345,21 @@ export default function AdminPage() {
   const [bulkSearch, setBulkSearch] = useState("");
   const [bulkMinistryFilter, setBulkMinistryFilter] = useState("all");
   const [bulkPage, setBulkPage] = useState(1);
+  const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
 
   const [editingRow, setEditingRow] = useState<AdminRecord | null>(null);
   const [editForm, setEditForm] = useState<EditFormState>(defaultEditForm);
   const [isSaving, setIsSaving] = useState(false);
+  const [showAdminBulkForm, setShowAdminBulkForm] = useState(false);
+  const [adminBulkForm, setAdminBulkForm] =
+    useState<AdminBulkFormState>(defaultAdminBulkForm);
+  const [isSubmittingAdminBulk, setIsSubmittingAdminBulk] = useState(false);
+  const [showAdminIndividualForm, setShowAdminIndividualForm] =
+    useState(false);
+  const [adminIndividualForm, setAdminIndividualForm] =
+    useState<AdminIndividualFormState>(defaultAdminIndividualForm);
+  const [isSubmittingAdminIndividual, setIsSubmittingAdminIndividual] =
+    useState(false);
 
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [pendingExportFormat, setPendingExportFormat] =
@@ -398,6 +458,7 @@ export default function AdminPage() {
       id: row.id,
       sourceType: "individual",
       sourceLabel: "Individual",
+      addedByAdmin: Boolean(row.added_by_admin),
       name: row.full_name,
       contactPerson: "Self",
       church: row.church,
@@ -412,6 +473,10 @@ export default function AdminPage() {
     }));
 
     const bulkMapped: AdminRecord[] = bulkRows.flatMap((row) => {
+      const addedByAdmin =
+        typeof row.added_by_admin === "boolean"
+          ? row.added_by_admin
+          : isAdminAddedBulkContactName(row.contact_name);
       const linkedAttendees: BulkLinkedAttendee[] = row.linked_attendees?.length
         ? row.linked_attendees
         : splitAttendeeNames(row.attendee_names).map((name) => ({
@@ -422,6 +487,7 @@ export default function AdminPage() {
         id: row.id,
         sourceType: "bulk",
         sourceLabel: "Bulk",
+        addedByAdmin,
         name: attendee.attendee_name,
         contactPerson: row.contact_name,
         church: attendee.attendee_church ?? row.church,
@@ -554,6 +620,26 @@ export default function AdminPage() {
     (allPage - 1) * ROWS_PER_PAGE,
     allPage * ROWS_PER_PAGE,
   );
+  const selectedRowKeySet = useMemo(
+    () => new Set(selectedRowKeys),
+    [selectedRowKeys],
+  );
+  const selectedRowsForExport = useMemo(
+    () => allRows.filter((row) => selectedRowKeySet.has(row.key)),
+    [allRows, selectedRowKeySet],
+  );
+  const selectedAttendeeRows = useMemo(
+    () =>
+      selectedRowsForExport.map((row) => ({
+        fullName: row.name,
+        church: row.church || "-",
+        phoneNumber: row.phone || "-",
+      })),
+    [selectedRowsForExport],
+  );
+  const areAllVisibleRowsSelected =
+    paginatedAllRows.length > 0 &&
+    paginatedAllRows.every((row) => selectedRowKeySet.has(row.key));
   const exportPreviewRows = useMemo(
     () => filteredAllRows.map(buildExportRow),
     [filteredAllRows],
@@ -656,6 +742,20 @@ export default function AdminPage() {
       setSelectedBulkId(filteredBulkRows[0].id);
     }
   }, [filteredBulkRows, selectedBulkId]);
+
+  useEffect(() => {
+    setSelectedRowKeys((current) =>
+      current.filter((key) => allRows.some((row) => row.key === key)),
+    );
+  }, [allRows]);
+
+  function isBulkRowAddedByAdmin(row: BulkRow) {
+    return (
+      typeof row.added_by_admin === "boolean"
+        ? row.added_by_admin
+        : isAdminAddedBulkContactName(row.contact_name)
+    );
+  }
 
   async function loadAdminData(
     loginUser: string,
@@ -825,6 +925,350 @@ export default function AdminPage() {
     setStatus(`Data refreshed for ${conferenceLabel(selectedConference)}.`);
   }
 
+  function toggleRowSelection(key: string) {
+    setSelectedRowKeys((current) =>
+      current.includes(key)
+        ? current.filter((value) => value !== key)
+        : [...current, key],
+    );
+  }
+
+  function toggleSelectVisibleRows() {
+    const visibleKeys = paginatedAllRows.map((row) => row.key);
+    if (!visibleKeys.length) return;
+
+    setSelectedRowKeys((current) => {
+      const currentSet = new Set(current);
+      const allSelected = visibleKeys.every((key) => currentSet.has(key));
+
+      if (allSelected) {
+        return current.filter((key) => !visibleKeys.includes(key));
+      }
+
+      const merged = new Set([...current, ...visibleKeys]);
+      return Array.from(merged);
+    });
+  }
+
+  async function exportSelectedRowsToPdf() {
+    if (!selectedAttendeeRows.length) {
+      setStatus("Select at least one row to export.");
+      return;
+    }
+
+    try {
+      const [{ default: jsPDF }, autoTableModule] = await Promise.all([
+        import("jspdf"),
+        import("jspdf-autotable"),
+      ]);
+      const autoTable = autoTableModule.default ?? autoTableModule.autoTable;
+      const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+
+      const reportDate = new Date();
+      const title = conferenceLabel(selectedConference).toUpperCase();
+      const fileBase = sanitizeFileName(
+        `${conferenceLabel(selectedConference)}-selected-attendees-${formatExportFileStamp(reportDate)}`,
+      );
+
+      doc.setTextColor(15, 23, 42);
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(18);
+      doc.text(title, 14, 16);
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      doc.text(`Rows: ${selectedAttendeeRows.length}`, 14, 23);
+
+      autoTable(doc, {
+        startY: 30,
+        head: [["Full Name", "Church", "Phone Number"]],
+        body: selectedAttendeeRows.map((row) => [row.fullName, row.church, row.phoneNumber]),
+        theme: "grid",
+        margin: { top: 12, right: 10, bottom: 12, left: 10 },
+        styles: {
+          font: "helvetica",
+          fontSize: 9,
+          cellPadding: 3,
+          textColor: [15, 23, 42],
+        },
+        headStyles: {
+          fillColor: [15, 23, 42],
+          textColor: [253, 230, 138],
+          fontStyle: "bold",
+        },
+      });
+
+      doc.save(`${fileBase}.pdf`);
+      setStatus("Selected attendees exported to PDF.");
+    } catch {
+      setStatus("Unable to export selected rows to PDF.");
+    }
+  }
+
+  function exportSelectedRowsToImage() {
+    if (!selectedAttendeeRows.length) {
+      setStatus("Select at least one row to export.");
+      return;
+    }
+
+    const reportDate = new Date();
+    const fileBase = sanitizeFileName(
+      `${conferenceLabel(selectedConference)}-selected-attendees-${formatExportFileStamp(reportDate)}`,
+    );
+
+    const width = 1400;
+    const outerPadding = 26;
+    const cardPadding = 26;
+    const logoSize = 76;
+    const titleHeight = 96;
+    const headerHeight = 52;
+    const rowHeight = 44;
+    const tableTop = outerPadding + cardPadding + titleHeight;
+    const tableHeight = headerHeight + selectedAttendeeRows.length * rowHeight;
+    const height = tableTop + tableHeight + cardPadding + outerPadding;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      setStatus("Unable to export selected rows to image.");
+      return;
+    }
+
+    const backdropGradient = ctx.createLinearGradient(0, 0, width, height);
+    backdropGradient.addColorStop(0, "#331a1c");
+    backdropGradient.addColorStop(0.35, "#5c2f2d");
+    backdropGradient.addColorStop(0.72, "#1f2942");
+    backdropGradient.addColorStop(1, "#142032");
+    ctx.fillStyle = backdropGradient;
+    ctx.fillRect(0, 0, width, height);
+
+    const cardX = outerPadding;
+    const cardY = outerPadding;
+    const cardWidth = width - outerPadding * 2;
+    const cardHeight = height - outerPadding * 2;
+    const radius = 20;
+
+    ctx.beginPath();
+    ctx.moveTo(cardX + radius, cardY);
+    ctx.lineTo(cardX + cardWidth - radius, cardY);
+    ctx.quadraticCurveTo(cardX + cardWidth, cardY, cardX + cardWidth, cardY + radius);
+    ctx.lineTo(cardX + cardWidth, cardY + cardHeight - radius);
+    ctx.quadraticCurveTo(cardX + cardWidth, cardY + cardHeight, cardX + cardWidth - radius, cardY + cardHeight);
+    ctx.lineTo(cardX + radius, cardY + cardHeight);
+    ctx.quadraticCurveTo(cardX, cardY + cardHeight, cardX, cardY + cardHeight - radius);
+    ctx.lineTo(cardX, cardY + radius);
+    ctx.quadraticCurveTo(cardX, cardY, cardX + radius, cardY);
+    ctx.closePath();
+
+    const cardGradient = ctx.createLinearGradient(cardX, cardY, cardX + cardWidth, cardY + cardHeight);
+    cardGradient.addColorStop(0, "rgba(15,23,42,0.92)");
+    cardGradient.addColorStop(1, "rgba(17,24,39,0.86)");
+    ctx.fillStyle = cardGradient;
+    ctx.fill();
+    ctx.strokeStyle = "rgba(251,191,36,0.28)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    const logoX = cardX + cardPadding;
+    const logoY = cardY + cardPadding;
+    const logoGradient = ctx.createLinearGradient(logoX, logoY, logoX + logoSize, logoY + logoSize);
+    logoGradient.addColorStop(0, "#f2be73");
+    logoGradient.addColorStop(1, "#d58147");
+    ctx.fillStyle = logoGradient;
+    ctx.beginPath();
+    ctx.arc(logoX + logoSize / 2, logoY + logoSize / 2, logoSize / 2, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = "#3f1d1d";
+    ctx.font = "800 24px Arial";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("JSCI", logoX + logoSize / 2, logoY + logoSize / 2 + 1);
+
+    const titleX = logoX + logoSize + 18;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillStyle = "#fde68a";
+    ctx.font = "700 44px Arial";
+    ctx.fillText(conferenceLabel(selectedConference).toUpperCase(), titleX, logoY + 42);
+
+    ctx.fillStyle = "#cbd5e1";
+    ctx.font = "500 20px Arial";
+    ctx.fillText("Selected Attendee Directory", titleX, logoY + 70);
+
+    ctx.fillStyle = "#94a3b8";
+    ctx.font = "500 15px Arial";
+    ctx.fillText(`Generated ${formatExportDate(reportDate)} | Rows ${selectedAttendeeRows.length}`, titleX, logoY + 92);
+
+    const tableX = cardX + cardPadding;
+    const tableWidth = cardWidth - cardPadding * 2;
+    const colWidths = [0.42, 0.33, 0.25].map((ratio) => tableWidth * ratio);
+
+    ctx.fillStyle = "#0f172a";
+    ctx.fillRect(tableX, tableTop, tableWidth, headerHeight);
+    ctx.strokeStyle = "rgba(251,191,36,0.35)";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(tableX, tableTop, tableWidth, headerHeight);
+
+    ctx.font = "700 24px Arial";
+    ctx.fillStyle = "#fde68a";
+    const headers = ["Full Name", "Church", "Phone Number"];
+    let colCursor = tableX;
+    headers.forEach((header, index) => {
+      ctx.fillText(header, colCursor + 14, tableTop + 33);
+      colCursor += colWidths[index];
+    });
+
+    ctx.font = "500 22px Arial";
+    selectedAttendeeRows.forEach((row, index) => {
+      const y = tableTop + headerHeight + index * rowHeight;
+      ctx.fillStyle = index % 2 === 0 ? "rgba(15,23,42,0.86)" : "rgba(30,41,59,0.86)";
+      ctx.fillRect(tableX, y, tableWidth, rowHeight);
+
+      ctx.fillStyle = "#f8fafc";
+      let x = tableX;
+      const values = [row.fullName, row.church, row.phoneNumber];
+      values.forEach((value, valueIndex) => {
+        ctx.fillText(String(value || "-"), x + 14, y + 30);
+        x += colWidths[valueIndex];
+      });
+
+      ctx.strokeStyle = "rgba(148,163,184,0.4)";
+      ctx.strokeRect(tableX, y, tableWidth, rowHeight);
+    });
+
+    ctx.strokeStyle = "rgba(251,191,36,0.4)";
+    ctx.strokeRect(tableX, tableTop, tableWidth, tableHeight);
+
+    const link = document.createElement("a");
+    link.href = canvas.toDataURL("image/png");
+    link.download = `${fileBase}.png`;
+    link.click();
+    setStatus("Selected attendees exported to image.");
+  }
+
+  async function submitAdminBulkRegistration(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const attendeeRows = adminBulkForm.attendeeRows
+      .map((row) => ({
+        fullName: row.fullName.trim(),
+        phoneNumber: row.phoneNumber.trim(),
+      }))
+      .filter((row) => row.fullName);
+
+    const attendeeList = attendeeRows.length
+      ? attendeeRows.map((row) => row.fullName)
+      : splitAttendeeNames(adminBulkForm.attendeeNames);
+
+    if (!attendeeList.length) {
+      setStatus("Add at least one attendee name for bulk registration.");
+      return;
+    }
+
+    const payload = {
+      church: adminBulkForm.church,
+      ministry: adminBulkForm.ministry,
+      address: adminBulkForm.address,
+      localChurchPastor: adminBulkForm.pastor,
+      phoneNumber: adminBulkForm.phone,
+      attendeeCount: String(attendeeList.length),
+      attendeeNames: attendeeList.join("\n"),
+      attendeeRows,
+      conference: selectedConference,
+    };
+
+    setIsSubmittingAdminBulk(true);
+    setStatus("");
+
+    try {
+      const response = await fetch("/api/registrations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-username": username,
+          "x-admin-password": ADMIN_PASSWORD,
+        },
+        body: JSON.stringify({
+          type: "adminBulk",
+          payload,
+        }),
+      });
+
+      const data = (await response.json()) as { error?: string; message?: string };
+
+      if (!response.ok) {
+        setStatus(data.error ?? "Unable to submit admin bulk registration.");
+        setIsSubmittingAdminBulk(false);
+        return;
+      }
+
+      setAdminBulkForm(defaultAdminBulkForm);
+      setShowAdminBulkForm(false);
+      await refreshData();
+      setStatus("Admin bulk registration submitted successfully.");
+    } catch {
+      setStatus("Network error while submitting admin bulk registration.");
+      setIsSubmittingAdminBulk(false);
+      return;
+    }
+
+    setIsSubmittingAdminBulk(false);
+  }
+
+  async function submitAdminIndividualRegistration(
+    event: FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+
+    setIsSubmittingAdminIndividual(true);
+    setStatus("");
+
+    try {
+      const response = await fetch("/api/registrations", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-username": username,
+          "x-admin-password": ADMIN_PASSWORD,
+        },
+        body: JSON.stringify({
+          type: "individual",
+          payload: {
+            name: adminIndividualForm.name,
+            church: adminIndividualForm.church,
+            ministry: adminIndividualForm.ministry,
+            address: adminIndividualForm.address,
+            localChurchPastor: adminIndividualForm.pastor,
+            phoneNumber: adminIndividualForm.phone,
+            conference: selectedConference,
+          },
+        }),
+      });
+
+      const data = (await response.json()) as { error?: string; message?: string };
+
+      if (!response.ok) {
+        setStatus(data.error ?? "Unable to submit individual registration.");
+        setIsSubmittingAdminIndividual(false);
+        return;
+      }
+
+      setAdminIndividualForm(defaultAdminIndividualForm);
+      setShowAdminIndividualForm(false);
+      await refreshData();
+      setStatus("Admin individual registration submitted successfully.");
+    } catch {
+      setStatus("Network error while submitting individual registration.");
+      setIsSubmittingAdminIndividual(false);
+      return;
+    }
+
+    setIsSubmittingAdminIndividual(false);
+  }
+
   async function logout() {
     try {
       await fetch("/api/admin/security", {
@@ -849,6 +1293,7 @@ export default function AdminPage() {
     setSelectedBulkId("");
     setAllSearch("");
     setBulkSearch("");
+    setSelectedRowKeys([]);
     setShowChangeCodeModal(false);
     setCodeStatus("");
     setSecurityStatus("");
@@ -884,6 +1329,7 @@ export default function AdminPage() {
       id: fullBulk.id,
       sourceType: "bulk",
       sourceLabel: "Bulk",
+      addedByAdmin: isBulkRowAddedByAdmin(fullBulk),
       name: fullBulk.contact_name,
       contactPerson: fullBulk.contact_name,
       church: fullBulk.church,
@@ -914,6 +1360,7 @@ export default function AdminPage() {
       id: fullBulk.id,
       sourceType: "bulk",
       sourceLabel: "Bulk",
+      addedByAdmin: isBulkRowAddedByAdmin(fullBulk),
       name: fullBulk.contact_name,
       contactPerson: fullBulk.contact_name,
       church: fullBulk.church,
@@ -1674,6 +2121,48 @@ export default function AdminPage() {
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-lg border border-amber-100/30 px-2.5 py-1 text-xs text-amber-100">
+                      Selected: {selectedAttendeeRows.length}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={exportSelectedRowsToPdf}
+                      className="rounded-lg border border-sky-200/40 bg-sky-500/15 px-3 py-1.5 text-xs font-semibold text-sky-100 hover:bg-sky-500/25"
+                    >
+                      Export Selected PDF
+                    </button>
+                    <button
+                      type="button"
+                      onClick={exportSelectedRowsToImage}
+                      className="rounded-lg border border-cyan-200/40 bg-cyan-500/15 px-3 py-1.5 text-xs font-semibold text-cyan-100 hover:bg-cyan-500/25"
+                    >
+                      Export Selected Image
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedRowKeys([])}
+                      className="rounded-lg border border-amber-100/30 px-3 py-1.5 text-xs font-semibold text-amber-200 hover:bg-slate-800"
+                    >
+                      Clear Selection
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowAdminIndividualForm((current) => !current)}
+                      className="rounded-lg border border-sky-200/40 bg-sky-500/15 px-3 py-1.5 text-xs font-semibold text-sky-100 hover:bg-sky-500/25"
+                    >
+                      {showAdminIndividualForm
+                        ? "Close Individual Form"
+                        : "Add Individual Registration"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowAdminBulkForm((current) => !current)}
+                      className="rounded-lg border border-emerald-200/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-semibold text-emerald-100 hover:bg-emerald-500/25"
+                    >
+                      {showAdminBulkForm
+                        ? "Close Admin Bulk Form"
+                        : "Add Bulk Registration"}
+                    </button>
                     <button
                       type="button"
                       onClick={() => openExportModal("pdf")}
@@ -1733,6 +2222,346 @@ export default function AdminPage() {
                   </div>
                 </div>
 
+                {showAdminIndividualForm ? (
+                  <form
+                    onSubmit={submitAdminIndividualRegistration}
+                    className="mb-4 rounded-xl border border-sky-200/30 bg-[linear-gradient(140deg,rgba(3,37,65,0.7),rgba(14,116,144,0.2))] p-3 sm:p-4"
+                  >
+                    <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <h4 className="text-sm font-bold text-sky-100">
+                          Admin Individual Registration
+                        </h4>
+                        <p className="text-xs text-sky-200/90">
+                          Add one attendee directly from admin dashboard.
+                        </p>
+                      </div>
+                      <span className="rounded-full border border-sky-200/40 bg-sky-950/40 px-3 py-1 text-[11px] font-semibold text-sky-100">
+                        Conference: {conferenceLabel(selectedConference)}
+                      </span>
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="grid gap-1 sm:col-span-2">
+                        <span className="text-xs text-sky-100">Full Name</span>
+                        <input
+                          required
+                          value={adminIndividualForm.name}
+                          onChange={(event) =>
+                            setAdminIndividualForm((current) => ({
+                              ...current,
+                              name: event.target.value,
+                            }))
+                          }
+                          className="rounded-lg border border-sky-100/30 bg-slate-950/55 px-3 py-2 text-sm text-sky-50"
+                        />
+                      </label>
+
+                      <label className="grid gap-1">
+                        <span className="text-xs text-sky-100">Church</span>
+                        <input
+                          value={adminIndividualForm.church}
+                          onChange={(event) =>
+                            setAdminIndividualForm((current) => ({
+                              ...current,
+                              church: event.target.value,
+                            }))
+                          }
+                          className="rounded-lg border border-sky-100/30 bg-slate-950/55 px-3 py-2 text-sm text-sky-50"
+                        />
+                      </label>
+
+                      <label className="grid gap-1">
+                        <span className="text-xs text-sky-100">
+                          Role / Ministry (Optional)
+                        </span>
+                        <select
+                          value={adminIndividualForm.ministry}
+                          onChange={(event) =>
+                            setAdminIndividualForm((current) => ({
+                              ...current,
+                              ministry: event.target.value,
+                            }))
+                          }
+                          className="rounded-lg border border-sky-100/30 bg-slate-950/55 px-3 py-2 text-sm text-sky-50"
+                        >
+                          <option value="">No ministry selected</option>
+                          {ministryOptions.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <label className="grid gap-1 sm:col-span-2">
+                        <span className="text-xs text-sky-100">Address</span>
+                        <input
+                          value={adminIndividualForm.address}
+                          onChange={(event) =>
+                            setAdminIndividualForm((current) => ({
+                              ...current,
+                              address: event.target.value,
+                            }))
+                          }
+                          className="rounded-lg border border-sky-100/30 bg-slate-950/55 px-3 py-2 text-sm text-sky-50"
+                        />
+                      </label>
+
+                      <label className="grid gap-1">
+                        <span className="text-xs text-sky-100">
+                          Local Church Pastor (Optional)
+                        </span>
+                        <input
+                          value={adminIndividualForm.pastor}
+                          onChange={(event) =>
+                            setAdminIndividualForm((current) => ({
+                              ...current,
+                              pastor: event.target.value,
+                            }))
+                          }
+                          className="rounded-lg border border-sky-100/30 bg-slate-950/55 px-3 py-2 text-sm text-sky-50"
+                        />
+                      </label>
+
+                      <label className="grid gap-1">
+                        <span className="text-xs text-sky-100">Phone</span>
+                        <input
+                          value={adminIndividualForm.phone}
+                          onChange={(event) =>
+                            setAdminIndividualForm((current) => ({
+                              ...current,
+                              phone: event.target.value,
+                            }))
+                          }
+                          className="rounded-lg border border-sky-100/30 bg-slate-950/55 px-3 py-2 text-sm text-sky-50"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="mt-3 flex justify-end">
+                      <button
+                        type="submit"
+                        disabled={isSubmittingAdminIndividual}
+                        className="rounded-lg bg-[linear-gradient(110deg,#38bdf8,#0ea5e9)] px-4 py-2 text-xs font-bold text-sky-950 disabled:opacity-60"
+                      >
+                        {isSubmittingAdminIndividual
+                          ? "Submitting..."
+                          : "Submit Individual"}
+                      </button>
+                    </div>
+                  </form>
+                ) : null}
+
+                {showAdminBulkForm ? (
+                  <form
+                    onSubmit={submitAdminBulkRegistration}
+                    className="mb-4 rounded-xl border border-emerald-200/30 bg-[linear-gradient(140deg,rgba(5,46,22,0.7),rgba(3,105,161,0.2))] p-3 sm:p-4"
+                  >
+                    <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <h4 className="text-sm font-bold text-emerald-100">
+                          Admin Bulk Registration
+                        </h4>
+                        <p className="text-xs text-emerald-200/90">
+                          Contact Person is automatically set to: Added by Admin
+                        </p>
+                      </div>
+                      <span className="rounded-full border border-emerald-200/40 bg-emerald-950/40 px-3 py-1 text-[11px] font-semibold text-emerald-100">
+                        Conference: {conferenceLabel(selectedConference)}
+                      </span>
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="grid gap-1">
+                        <span className="text-xs text-emerald-100">Church</span>
+                        <input
+                          value={adminBulkForm.church}
+                          onChange={(event) =>
+                            setAdminBulkForm((current) => ({
+                              ...current,
+                              church: event.target.value,
+                            }))
+                          }
+                          className="rounded-lg border border-emerald-100/30 bg-slate-950/55 px-3 py-2 text-sm text-emerald-50"
+                        />
+                      </label>
+
+                      <label className="grid gap-1">
+                        <span className="text-xs text-emerald-100">Ministry</span>
+                        <select
+                          value={adminBulkForm.ministry}
+                          onChange={(event) =>
+                            setAdminBulkForm((current) => ({
+                              ...current,
+                              ministry: event.target.value,
+                            }))
+                          }
+                          className="rounded-lg border border-emerald-100/30 bg-slate-950/55 px-3 py-2 text-sm text-emerald-50"
+                        >
+                          <option value="">Select ministry</option>
+                          {ministryOptions.map((option) => (
+                            <option key={option} value={option}>
+                              {option}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <label className="grid gap-1 sm:col-span-2">
+                        <span className="text-xs text-emerald-100">Address</span>
+                        <input
+                          value={adminBulkForm.address}
+                          onChange={(event) =>
+                            setAdminBulkForm((current) => ({
+                              ...current,
+                              address: event.target.value,
+                            }))
+                          }
+                          className="rounded-lg border border-emerald-100/30 bg-slate-950/55 px-3 py-2 text-sm text-emerald-50"
+                        />
+                      </label>
+
+                      <label className="grid gap-1">
+                        <span className="text-xs text-emerald-100">
+                          Local Church Pastor
+                        </span>
+                        <input
+                          value={adminBulkForm.pastor}
+                          onChange={(event) =>
+                            setAdminBulkForm((current) => ({
+                              ...current,
+                              pastor: event.target.value,
+                            }))
+                          }
+                          className="rounded-lg border border-emerald-100/30 bg-slate-950/55 px-3 py-2 text-sm text-emerald-50"
+                        />
+                      </label>
+
+                      <label className="grid gap-1">
+                        <span className="text-xs text-emerald-100">Phone</span>
+                        <input
+                          value={adminBulkForm.phone}
+                          onChange={(event) =>
+                            setAdminBulkForm((current) => ({
+                              ...current,
+                              phone: event.target.value,
+                            }))
+                          }
+                          className="rounded-lg border border-emerald-100/30 bg-slate-950/55 px-3 py-2 text-sm text-emerald-50"
+                        />
+                      </label>
+
+                      <label className="grid gap-1 sm:col-span-2">
+                        <span className="text-xs text-emerald-100">
+                          Attendee Names (one per line or comma-separated)
+                        </span>
+                        <textarea
+                          rows={5}
+                          value={adminBulkForm.attendeeNames}
+                          onChange={(event) =>
+                            setAdminBulkForm((current) => ({
+                              ...current,
+                              attendeeNames: event.target.value,
+                            }))
+                          }
+                          placeholder="Juan Dela Cruz&#10;Maria Santos&#10;Pedro Reyes"
+                          className="rounded-lg border border-emerald-100/30 bg-slate-950/55 px-3 py-2 text-sm text-emerald-50"
+                        />
+                      </label>
+
+                      <div className="sm:col-span-2 rounded-lg border border-emerald-100/20 bg-slate-950/35 p-3">
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                          <p className="text-xs font-semibold text-emerald-100">
+                            Attendees with Individual Phone Numbers
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setAdminBulkForm((current) => ({
+                                ...current,
+                                attendeeRows: [...current.attendeeRows, { fullName: "", phoneNumber: "" }],
+                              }))
+                            }
+                            className="rounded-md border border-emerald-200/40 px-2 py-1 text-[11px] font-semibold text-emerald-100 hover:bg-emerald-500/15"
+                          >
+                            Add attendee row
+                          </button>
+                        </div>
+
+                        <div className="space-y-2">
+                          {adminBulkForm.attendeeRows.map((row, index) => (
+                            <div key={`admin-bulk-attendee-${index}`} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_200px_auto]">
+                              <input
+                                value={row.fullName}
+                                onChange={(event) =>
+                                  setAdminBulkForm((current) => ({
+                                    ...current,
+                                    attendeeRows: current.attendeeRows.map((entry, entryIndex) =>
+                                      entryIndex === index
+                                        ? { ...entry, fullName: event.target.value }
+                                        : entry,
+                                    ),
+                                  }))
+                                }
+                                placeholder="Attendee full name"
+                                className="rounded-lg border border-emerald-100/30 bg-slate-950/55 px-3 py-2 text-sm text-emerald-50"
+                              />
+                              <input
+                                value={row.phoneNumber}
+                                onChange={(event) =>
+                                  setAdminBulkForm((current) => ({
+                                    ...current,
+                                    attendeeRows: current.attendeeRows.map((entry, entryIndex) =>
+                                      entryIndex === index
+                                        ? { ...entry, phoneNumber: event.target.value }
+                                        : entry,
+                                    ),
+                                  }))
+                                }
+                                placeholder="Phone number"
+                                className="rounded-lg border border-emerald-100/30 bg-slate-950/55 px-3 py-2 text-sm text-emerald-50"
+                              />
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setAdminBulkForm((current) => ({
+                                    ...current,
+                                    attendeeRows:
+                                      current.attendeeRows.length > 1
+                                        ? current.attendeeRows.filter((_, entryIndex) => entryIndex !== index)
+                                        : [{ fullName: "", phoneNumber: "" }],
+                                  }))
+                                }
+                                className="rounded-lg border border-rose-200/40 px-3 py-2 text-xs font-semibold text-rose-200 hover:bg-rose-500/15"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-xs text-emerald-200/90">
+                        Total attendees: {
+                          adminBulkForm.attendeeRows.some((row) => row.fullName.trim())
+                            ? adminBulkForm.attendeeRows.filter((row) => row.fullName.trim()).length
+                            : splitAttendeeNames(adminBulkForm.attendeeNames).length
+                        }
+                      </p>
+                      <button
+                        type="submit"
+                        disabled={isSubmittingAdminBulk}
+                        className="rounded-lg bg-[linear-gradient(110deg,#34d399,#10b981)] px-4 py-2 text-xs font-bold text-emerald-950 disabled:opacity-60"
+                      >
+                        {isSubmittingAdminBulk ? "Submitting..." : "Submit Admin Bulk"}
+                      </button>
+                    </div>
+                  </form>
+                ) : null}
+
                 {registrationView === "all" ? (
                   <>
                     <div className="mb-3 grid gap-2 rounded-xl border border-amber-100/20 bg-slate-900/50 p-2 md:p-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_180px_200px]">
@@ -1777,9 +2606,18 @@ export default function AdminPage() {
                       <table className="min-w-[1250px] w-full text-left text-sm">
                         <thead className="bg-slate-900/80 text-amber-200">
                           <tr>
+                            <th className="px-3 py-2">
+                              <input
+                                type="checkbox"
+                                checked={areAllVisibleRowsSelected}
+                                onChange={toggleSelectVisibleRows}
+                                aria-label="Select visible rows"
+                              />
+                            </th>
                             <th className="px-3 py-2">Source</th>
                             <th className="px-3 py-2">Name</th>
                             <th className="px-3 py-2">Contact Person</th>
+                            <th className="px-3 py-2">Added By</th>
                             <th className="px-3 py-2">Church</th>
                             <th className="px-3 py-2">Ministry</th>
                             <th className="px-3 py-2">Address</th>
@@ -1798,10 +2636,27 @@ export default function AdminPage() {
                                 key={row.key}
                                 className="border-t border-amber-100/10 align-top"
                               >
+                                <td className="px-3 py-2">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedRowKeySet.has(row.key)}
+                                    onChange={() => toggleRowSelection(row.key)}
+                                    aria-label={`Select ${row.name}`}
+                                  />
+                                </td>
                                 <td className="px-3 py-2">{row.sourceLabel}</td>
                                 <td className="px-3 py-2">{row.name}</td>
                                 <td className="px-3 py-2">
-                                  {row.contactPerson}
+                                  {row.addedByAdmin ? "Admin" : row.contactPerson}
+                                </td>
+                                <td className="px-3 py-2">
+                                  {row.addedByAdmin ? (
+                                    <span className="inline-flex items-center rounded-full border border-emerald-200/40 bg-emerald-500/20 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-emerald-100">
+                                      Admin
+                                    </span>
+                                  ) : (
+                                    <span className="text-amber-100/85">Public Form</span>
+                                  )}
                                 </td>
                                 <td className="px-3 py-2">{row.church}</td>
                                 <td className="px-3 py-2">{row.ministry}</td>
@@ -1838,7 +2693,7 @@ export default function AdminPage() {
                           ) : (
                             <tr>
                               <td
-                                colSpan={12}
+                                colSpan={14}
                                 className="px-3 py-6 text-center text-amber-200"
                               >
                                 No registrations found.
@@ -1866,6 +2721,11 @@ export default function AdminPage() {
                               >
                                 {row.sourceLabel}
                               </span>
+                              {row.addedByAdmin ? (
+                                <span className="px-2 py-0.5 rounded text-[10px] uppercase font-bold tracking-wider bg-emerald-500/20 text-emerald-100 border border-emerald-200/30">
+                                  Added by Admin
+                                </span>
+                              ) : null}
                               <span className="text-[10px] text-amber-300 opacity-70">
                                 {formatDate(row.submittedAt)}
                               </span>
@@ -1910,10 +2770,7 @@ export default function AdminPage() {
                                   Bulk Details
                                 </p>
                                 <p className="text-[11px] text-amber-100 leading-relaxed italic">
-                                  Managed by{" "}
-                                  <span className="font-semibold">
-                                    {row.contactPerson}
-                                  </span>{" "}
+                                  Managed by <span className="font-semibold">{row.contactPerson}</span>{" "}
                                   • {row.attendees} attendees
                                 </p>
                               </div>
@@ -2031,6 +2888,11 @@ export default function AdminPage() {
                               <p className="text-sm font-semibold text-amber-100">
                                 {row.contact_name}
                               </p>
+                              {isBulkRowAddedByAdmin(row) ? (
+                                <p className="mt-1 inline-flex rounded-full border border-emerald-200/40 bg-emerald-500/20 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-100">
+                                  Added by Admin
+                                </p>
+                              ) : null}
                               <p className="text-xs text-amber-200">
                                 {row.church}
                               </p>
@@ -2095,6 +2957,9 @@ export default function AdminPage() {
                                     id: selectedBulkRecord.id,
                                     sourceType: "bulk",
                                     sourceLabel: "Bulk",
+                                    addedByAdmin: isBulkRowAddedByAdmin(
+                                      selectedBulkRecord,
+                                    ),
                                     name: selectedBulkRecord.contact_name,
                                     contactPerson:
                                       selectedBulkRecord.contact_name,
@@ -2123,6 +2988,9 @@ export default function AdminPage() {
                                     id: selectedBulkRecord.id,
                                     sourceType: "bulk",
                                     sourceLabel: "Bulk",
+                                    addedByAdmin: isBulkRowAddedByAdmin(
+                                      selectedBulkRecord,
+                                    ),
                                     name: selectedBulkRecord.contact_name,
                                     contactPerson:
                                       selectedBulkRecord.contact_name,

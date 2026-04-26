@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 type RegistrationRequest = {
-  type: "individual" | "bulk" | "bulkImport";
+  type: "individual" | "bulk" | "bulkImport" | "adminBulk";
   payload:
     | Record<string, string>
     | {
@@ -27,6 +27,15 @@ type FormPayload = Record<string, string>;
 
 type BulkFormPayload = FormPayload & {
   attendeeRows?: ImportedRow[];
+};
+
+type AdminAttendeeRow = {
+  fullName?: string;
+  phoneNumber?: string;
+};
+
+type AdminBulkFormPayload = FormPayload & {
+  attendeeRows?: AdminAttendeeRow[];
 };
 
 type ImportedRow = {
@@ -60,9 +69,6 @@ function normalizeConference(input: string | null | undefined): "leyte" | "cebu"
 const requiredIndividualFields = [
   "name",
   "church",
-  "ministry",
-  "address",
-  "localChurchPastor",
   "phoneNumber",
 ];
 
@@ -81,6 +87,8 @@ const adminCredentials = {
   username: "admin",
   password: "Admin@123!",
 };
+
+const adminBulkContactName = "Added by Admin";
 
 async function getConferenceAttendeeCount(supabase: any, conference: "leyte" | "cebu") {
   const [{ count: individualCount, error: individualError }, { data: bulkRows, error: bulkError }] = await Promise.all([
@@ -190,6 +198,10 @@ function includeContactInAttendeeNames(contactName: string, attendeeNames: strin
   return merged;
 }
 
+function isAdminBulkContactName(value: string) {
+  return normalizePersonName(value).toLowerCase() === adminBulkContactName.toLowerCase();
+}
+
 function normalizeImportedRows(rows: ImportedRow[]) {
   return rows.map((row) => ({
     fullName: normalizePersonName(String(row.fullName ?? "")),
@@ -283,13 +295,13 @@ export async function GET(request: Request) {
 
     const individualQuery = supabaseAdmin
       .from("individual_registrations")
-      .select("id,full_name,church,ministry,address,local_church_pastor,phone_number,conference,created_at")
+      .select("id,full_name,church,ministry,address,local_church_pastor,phone_number,added_by_admin,conference,created_at")
       .order("created_at", { ascending: false })
       .limit(5000);
 
     const bulkQuery = supabaseAdmin
       .from("bulk_registrations")
-      .select("id,contact_name,church,ministry,address,local_church_pastor,phone_number,attendee_count,attendee_names,conference,created_at")
+      .select("id,contact_name,church,ministry,address,local_church_pastor,phone_number,attendee_count,attendee_names,added_by_admin,conference,created_at")
       .order("created_at", { ascending: false })
       .limit(5000);
 
@@ -322,6 +334,7 @@ export async function GET(request: Request) {
       phone_number: string;
       attendee_count: number;
       attendee_names: string;
+      added_by_admin?: boolean;
       conference: "leyte" | "cebu";
       created_at: string;
     }>;
@@ -382,21 +395,25 @@ export async function GET(request: Request) {
       const contactName = normalizePersonName(row.contact_name);
       const linkedRowsForBulk = attendeesByBulkId.get(row.id) ?? [];
 
+      const shouldIncludeContactAttendee = !isAdminBulkContactName(contactName);
+
       if (linkedRowsForBulk.length) {
         const mergedLinkedAttendees: LinkedAttendeeRow[] = [];
         const seen = new Set<string>();
-        const candidates: LinkedAttendeeRow[] = [
-          {
-            bulk_registration_id: row.id,
-            attendee_name: contactName,
-            attendee_phone: row.phone_number,
-            attendee_ministry: row.ministry,
-            attendee_church: row.church,
-            attendee_address: row.address,
-            attendee_local_church_pastor: row.local_church_pastor,
-          },
-          ...linkedRowsForBulk,
-        ];
+        const contactCandidate: LinkedAttendeeRow[] = shouldIncludeContactAttendee
+          ? [
+              {
+                bulk_registration_id: row.id,
+                attendee_name: contactName,
+                attendee_phone: row.phone_number,
+                attendee_ministry: row.ministry,
+                attendee_church: row.church,
+                attendee_address: row.address,
+                attendee_local_church_pastor: row.local_church_pastor,
+              },
+            ]
+          : [];
+        const candidates: LinkedAttendeeRow[] = [...contactCandidate, ...linkedRowsForBulk];
 
         for (const attendee of candidates) {
           const normalizedName = normalizePersonName(attendee.attendee_name);
@@ -421,7 +438,9 @@ export async function GET(request: Request) {
         };
       }
 
-      const attendeeNames = includeContactInAttendeeNames(contactName, parseAttendeeNames(row.attendee_names));
+      const attendeeNames = isAdminBulkContactName(contactName)
+        ? parseAttendeeNames(row.attendee_names)
+        : includeContactInAttendeeNames(contactName, parseAttendeeNames(row.attendee_names));
       return {
         ...row,
         attendee_count: attendeeNames.length,
@@ -700,10 +719,105 @@ export async function POST(request: Request) {
     );
   }
 
+  if (body.type === "adminBulk") {
+    if (!isAdminAuthorized(request)) {
+      return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+    }
+
+    const payload = body.payload as AdminBulkFormPayload;
+    const church = String(payload.church ?? "").trim();
+    const ministry = String(payload.ministry ?? "").trim();
+    const address = String(payload.address ?? "").trim();
+    const localChurchPastor = normalizePersonName(String(payload.localChurchPastor ?? ""));
+    const phoneNumber = String(payload.phoneNumber ?? "").trim();
+    const providedAttendeeRows = Array.isArray(payload.attendeeRows)
+      ? payload.attendeeRows
+          .map((row) => ({
+            fullName: normalizePersonName(String(row.fullName ?? "")),
+            phoneNumber: String(row.phoneNumber ?? "").trim(),
+          }))
+          .filter((row) => row.fullName)
+      : [];
+
+    const attendeeNames = providedAttendeeRows.length
+      ? providedAttendeeRows.map((row) => row.fullName)
+      : parseAttendeeNames(String(payload.attendeeNames ?? ""));
+
+    if (!attendeeNames.length) {
+      return NextResponse.json({ error: "At least one attendee name is required." }, { status: 400 });
+    }
+
+    const capacityCheck = await ensureConferenceCapacity(supabase, conference, attendeeNames.length);
+    if (!capacityCheck.ok) {
+      return NextResponse.json({ error: capacityCheck.error }, { status: capacityCheck.status });
+    }
+
+    const { data: insertedBulkRow, error } = await supabase
+      .from("bulk_registrations")
+      .insert({
+        contact_name: adminBulkContactName,
+        church,
+        ministry,
+        address,
+        local_church_pastor: localChurchPastor,
+        phone_number: phoneNumber,
+        attendee_count: attendeeNames.length,
+        attendee_names: attendeeNames.join("\n"),
+        added_by_admin: true,
+        conference,
+      })
+      .select("id")
+      .single();
+
+    if (error) {
+      if ((error as { code?: string }).code === "PGRST205") {
+        return NextResponse.json(
+          {
+            error:
+              "Database table is missing. Run migrations/001_create_registration_tables.sql in Supabase SQL Editor.",
+          },
+          { status: 500 },
+        );
+      }
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    const linkedRows: BulkAttendeeInsert[] = providedAttendeeRows.length
+      ? providedAttendeeRows.map((row) => ({
+          bulk_registration_id: insertedBulkRow.id,
+          attendee_name: row.fullName,
+          attendee_phone: row.phoneNumber || undefined,
+          attendee_ministry: ministry,
+          attendee_church: church,
+          attendee_address: address,
+          attendee_local_church_pastor: localChurchPastor,
+        }))
+      : attendeeNames.map((attendeeName) => ({
+          bulk_registration_id: insertedBulkRow.id,
+          attendee_name: attendeeName,
+          attendee_phone: undefined,
+          attendee_ministry: ministry,
+          attendee_church: church,
+          attendee_address: address,
+          attendee_local_church_pastor: localChurchPastor,
+        }));
+
+    const replaceLinkedError = await replaceBulkAttendees(supabase, insertedBulkRow.id, linkedRows, false);
+    if (replaceLinkedError) {
+      return NextResponse.json({ error: replaceLinkedError }, { status: 500 });
+    }
+
+    return NextResponse.json({ message: "Admin bulk registration submitted." }, { status: 201 });
+  }
+
   const payload = body.payload as FormPayload;
 
   if (body.type === "individual") {
-    const missing = requiredIndividualFields.find((field) => !payload[field]?.trim());
+    const isAdminSubmission = isAdminAuthorized(request);
+    const requiredFields = isAdminSubmission
+      ? ["name"]
+      : requiredIndividualFields;
+    const missing = requiredFields.find((field) => !payload[field]?.trim());
     if (missing) {
       return NextResponse.json({ error: `${missing} is required.` }, { status: 400 });
     }
@@ -720,6 +834,7 @@ export async function POST(request: Request) {
       address: payload.address,
       local_church_pastor: normalizePersonName(payload.localChurchPastor),
       phone_number: payload.phoneNumber,
+      added_by_admin: isAdminSubmission,
       conference,
     });
 
@@ -751,10 +866,9 @@ export async function POST(request: Request) {
   const address = String(payload.address ?? "").trim();
   const localChurchPastor = normalizePersonName(String(payload.localChurchPastor ?? ""));
   const phoneNumber = String(payload.phoneNumber ?? "").trim();
-  const attendeeNames = includeContactInAttendeeNames(
-    contactName,
-    parseAttendeeNames(payload.attendeeNames),
-  );
+  const attendeeNames = isAdminBulkContactName(contactName)
+    ? parseAttendeeNames(payload.attendeeNames)
+    : includeContactInAttendeeNames(contactName, parseAttendeeNames(payload.attendeeNames));
   const providedAttendeeRows = Array.isArray(bulkPayload.attendeeRows)
     ? normalizeImportedRows(bulkPayload.attendeeRows)
     : [];
@@ -811,17 +925,22 @@ export async function POST(request: Request) {
   }
 
   const contactKey = contactName.toLowerCase();
+  const shouldIncludeContactAttendee = !isAdminBulkContactName(contactName);
   const linkedRows: BulkAttendeeInsert[] = providedAttendeeRows.length
     ? [
-        {
-          bulk_registration_id: insertedBulkRow.id,
-          attendee_name: contactName,
-          attendee_phone: phoneNumber,
-          attendee_ministry: ministry,
-          attendee_church: church,
-          attendee_address: address,
-          attendee_local_church_pastor: localChurchPastor,
-        },
+        ...(shouldIncludeContactAttendee
+          ? [
+              {
+                bulk_registration_id: insertedBulkRow.id,
+                attendee_name: contactName,
+                attendee_phone: phoneNumber,
+                attendee_ministry: ministry,
+                attendee_church: church,
+                attendee_address: address,
+                attendee_local_church_pastor: localChurchPastor,
+              },
+            ]
+          : []),
         ...providedAttendeeRows
           .filter((row) => normalizePersonName(row.fullName).toLowerCase() !== contactKey)
           .map((row) => ({
@@ -835,7 +954,7 @@ export async function POST(request: Request) {
           })),
       ]
     : attendeeNames.map((attendeeName) => {
-        const isContact = attendeeName.toLowerCase() === contactKey;
+        const isContact = shouldIncludeContactAttendee && attendeeName.toLowerCase() === contactKey;
         return {
           bulk_registration_id: insertedBulkRow.id,
           attendee_name: attendeeName,
@@ -899,7 +1018,7 @@ export async function PATCH(request: Request) {
   });
 
   if (type === "individual") {
-    const required = ["name", "church", "ministry", "address", "localChurchPastor", "phoneNumber"];
+    const required = ["name", "church", "phoneNumber"];
     const missing = required.find((field) => !String(payload[field] ?? "").trim());
     if (missing) {
       return NextResponse.json({ error: `${missing} is required.` }, { status: 400 });
@@ -950,10 +1069,12 @@ export async function PATCH(request: Request) {
   const address = String(payload.address ?? "").trim();
   const localChurchPastor = normalizePersonName(String(payload.localChurchPastor ?? ""));
   const phoneNumber = String(payload.phoneNumber ?? "").trim();
-  const attendeeNames = includeContactInAttendeeNames(
-    contactName,
-    parseAttendeeNames(String(payload.attendeeNames ?? "").trim()),
-  );
+  const attendeeNames = isAdminBulkContactName(contactName)
+    ? parseAttendeeNames(String(payload.attendeeNames ?? "").trim())
+    : includeContactInAttendeeNames(
+        contactName,
+        parseAttendeeNames(String(payload.attendeeNames ?? "").trim()),
+      );
   const providedAttendeeRows = Array.isArray((payload as BulkFormPayload).attendeeRows)
     ? normalizeImportedRows((payload as BulkFormPayload).attendeeRows ?? [])
     : [];
@@ -996,16 +1117,21 @@ export async function PATCH(request: Request) {
 
   if (providedAttendeeRows.length) {
     const contactKey = contactName.toLowerCase();
+    const shouldIncludeContactAttendee = !isAdminBulkContactName(contactName);
     linkedRows = [
-      {
-        bulk_registration_id: id,
-        attendee_name: contactName,
-        attendee_phone: phoneNumber,
-        attendee_ministry: ministry,
-        attendee_church: church,
-        attendee_address: address,
-        attendee_local_church_pastor: localChurchPastor,
-      },
+      ...(shouldIncludeContactAttendee
+        ? [
+            {
+              bulk_registration_id: id,
+              attendee_name: contactName,
+              attendee_phone: phoneNumber,
+              attendee_ministry: ministry,
+              attendee_church: church,
+              attendee_address: address,
+              attendee_local_church_pastor: localChurchPastor,
+            },
+          ]
+        : []),
       ...providedAttendeeRows
         .filter((row) => normalizePersonName(row.fullName).toLowerCase() !== contactKey)
         .map((row) => ({
@@ -1038,8 +1164,9 @@ export async function PATCH(request: Request) {
         }>)
       : [];
 
+    const shouldIncludeContactAttendee = !isAdminBulkContactName(contactName);
     linkedRows = attendeeNames.map((attendeeName, index) => {
-      const isContact = attendeeName.toLowerCase() === contactName.toLowerCase();
+      const isContact = shouldIncludeContactAttendee && attendeeName.toLowerCase() === contactName.toLowerCase();
       const existing =
         existingRows[index] ??
         existingRows.find(
