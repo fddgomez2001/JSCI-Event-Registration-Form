@@ -1,7 +1,9 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { Archivo_Black } from "next/font/google";
 import * as XLSX from "xlsx";
+import QRCode from "qrcode";
 import {
   Bar,
   BarChart,
@@ -16,10 +18,23 @@ import {
   YAxis,
 } from "recharts";
 
-type AdminTab = "dashboard" | "registrations";
+type AdminTab = "dashboard" | "registrations" | "callers" | "number-requests";
 type RegistrationView = "all" | "bulk";
 type RegistrationSource = "individual" | "bulk";
 type Conference = "leyte" | "cebu";
+type CallStatus = "available" | "calling" | "confirmed" | "not_attending" | "follow_up_needed" | "no_number";
+
+const archivoBlack = Archivo_Black({
+  weight: "400",
+  subsets: ["latin"],
+});
+
+const ID_BASE_WIDTH = 250;
+const ID_BASE_HEIGHT = 353;
+const ID_EXPORT_WIDTH_PX = 1416;
+const ID_EXPORT_HEIGHT_PX = 2000;
+const FRONT_NAME_BOX = { left: 19, top: 194, width: 211, height: 49 };
+const BACK_QR_BOX = { left: 50, top: 56, width: 149, height: 147 };
 
 type IndividualRow = {
   id: string;
@@ -69,6 +84,51 @@ type BulkLinkedAttendee = {
 type AdminResponse = {
   individual?: IndividualRow[];
   bulk?: BulkRow[];
+  error?: string;
+};
+
+type CallerLogRow = {
+  attendeeId?: string;
+  attendeeKey: string;
+  sourceType: "individual" | "bulk";
+  sourceId: string;
+  sourceIndex: number;
+  conference: Conference;
+  fullName: string;
+  phoneNumber: string;
+  church: string;
+  ministry: string;
+  address: string;
+  localChurchPastor: string;
+  callStatus: CallStatus;
+  claimedBy: string | null;
+  claimedAt: string | null;
+  callLockExpiresAt: string | null;
+  statusSetBy: string | null;
+  statusSetAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type CallerLogResponse = {
+  attendees?: CallerLogRow[];
+  error?: string;
+};
+
+type NumberRequestRow = {
+  id: string;
+  attendee_key: string;
+  conference: Conference;
+  attendee_name: string;
+  requested_by: string;
+  requested_at: string;
+  admin_notified_at: string | null;
+  number_added_at: string | null;
+  number_added_by: string | null;
+};
+
+type NumberRequestsResponse = {
+  requests?: NumberRequestRow[];
   error?: string;
 };
 
@@ -219,6 +279,32 @@ const baseMinistryOptions = [
   "Dance",
 ];
 
+const callerStatusLabels: Record<CallStatus, string> = {
+  available: "Available",
+  calling: "Calling",
+  confirmed: "Confirmed",
+  not_attending: "Not Attending",
+  follow_up_needed: "Follow-Up Needed",
+  no_number: "No Number",
+};
+
+function callerStatusTone(status: CallStatus) {
+  switch (status) {
+    case "calling":
+      return "border-sky-200/30 bg-sky-500/15 text-sky-100";
+    case "confirmed":
+      return "border-emerald-200/30 bg-emerald-500/15 text-emerald-100";
+    case "not_attending":
+      return "border-rose-200/30 bg-rose-500/15 text-rose-100";
+    case "follow_up_needed":
+      return "border-amber-200/30 bg-amber-500/15 text-amber-100";
+    case "no_number":
+      return "border-orange-200/30 bg-orange-500/15 text-orange-100";
+    default:
+      return "border-slate-200/20 bg-slate-500/15 text-slate-100";
+  }
+}
+
 const ministryAnalyticsOrder = [...baseMinistryOptions];
 const ministryChartColors = [
   "#f2be73",
@@ -314,6 +400,28 @@ function sanitizeFileName(value: string) {
     .toLowerCase();
 }
 
+async function loadImage(src: string) {
+  return await new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error(`Unable to load image: ${src}`));
+    image.src = src;
+  });
+}
+
+function getIdNameTypography(name: string) {
+  if (name.length > 35) {
+    return { fontSize: 13, lineHeight: 16 };
+  }
+  if (name.length > 28) {
+    return { fontSize: 14, lineHeight: 17 };
+  }
+  if (name.length > 18) {
+    return { fontSize: 18, lineHeight: 20 };
+  }
+  return { fontSize: 21, lineHeight: 23 };
+}
+
 export default function AdminPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -334,6 +442,8 @@ export default function AdminPage() {
   const [selectedBulkId, setSelectedBulkId] = useState<string>("");
   const [individualRows, setIndividualRows] = useState<IndividualRow[]>([]);
   const [bulkRows, setBulkRows] = useState<BulkRow[]>([]);
+  const [callerLogRows, setCallerLogRows] = useState<CallerLogRow[]>([]);
+  const [numberRequestRows, setNumberRequestRows] = useState<NumberRequestRow[]>([]);
 
   const [allSearch, setAllSearch] = useState("");
   const [allSourceFilter, setAllSourceFilter] = useState<
@@ -346,6 +456,11 @@ export default function AdminPage() {
   const [bulkMinistryFilter, setBulkMinistryFilter] = useState("all");
   const [bulkPage, setBulkPage] = useState(1);
   const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([]);
+  const [callerSearch, setCallerSearch] = useState("");
+  const [callerStatusFilter, setCallerStatusFilter] = useState<"all" | CallStatus>("all");
+  const [callerActionKey, setCallerActionKey] = useState("");
+  const [numberRequestSearch, setNumberRequestSearch] = useState("");
+  const [numberRequestConferenceFilter, setNumberRequestConferenceFilter] = useState<"all" | Conference>("all");
 
   const [editingRow, setEditingRow] = useState<AdminRecord | null>(null);
   const [editForm, setEditForm] = useState<EditFormState>(defaultEditForm);
@@ -379,6 +494,14 @@ export default function AdminPage() {
 
   const [deletingRow, setDeletingRow] = useState<AdminRecord | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [idModalOpen, setIdModalOpen] = useState(false);
+  const [idModalAttendee, setIdModalAttendee] = useState<{
+    name: string;
+    attendeeId: string;
+  } | null>(null);
+  const [idQrDataUrl, setIdQrDataUrl] = useState<string>("");
+  const [idFrontPreviewUrl, setIdFrontPreviewUrl] = useState<string>("");
+  const [isGeneratingPreview, setIsGeneratingPreview] = useState(false);
   const [showChangeCodeModal, setShowChangeCodeModal] = useState(false);
   const [codeForm, setCodeForm] = useState<AdminCodeFormState>(defaultCodeForm);
   const adminCodeInputRefs = useRef<Array<HTMLInputElement | null>>([]);
@@ -682,6 +805,52 @@ export default function AdminPage() {
     });
   }, [sortedBulkRows, bulkSearch, bulkMinistryFilter]);
 
+  const filteredCallerLogRows = useMemo(() => {
+    const query = callerSearch.trim().toLowerCase();
+
+    return callerLogRows.filter((row) => {
+      if (callerStatusFilter !== "all" && row.callStatus !== callerStatusFilter) {
+        return false;
+      }
+
+      if (!query) return true;
+
+      return [
+        row.fullName,
+        row.phoneNumber,
+        row.church,
+        row.ministry,
+        row.address,
+        row.localChurchPastor,
+        row.claimedBy ?? "",
+        row.statusSetBy ?? "",
+        callerStatusLabels[row.callStatus],
+        conferenceLabel(row.conference),
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(query);
+    });
+  }, [callerLogRows, callerSearch, callerStatusFilter]);
+
+  const callerLogSummary = useMemo(() => {
+    const summary = {
+      total: callerLogRows.length,
+      available: 0,
+      calling: 0,
+      confirmed: 0,
+      not_attending: 0,
+      follow_up_needed: 0,
+      no_number: 0,
+    };
+
+    callerLogRows.forEach((row) => {
+      summary[row.callStatus] += 1;
+    });
+
+    return summary;
+  }, [callerLogRows]);
+
   const bulkTotalPages = Math.max(
     1,
     Math.ceil(filteredBulkRows.length / ROWS_PER_PAGE),
@@ -744,6 +913,18 @@ export default function AdminPage() {
   }, [filteredBulkRows, selectedBulkId]);
 
   useEffect(() => {
+    if (!idModalOpen) {
+      setIdFrontPreviewUrl("");
+      setIsGeneratingPreview(false);
+      return;
+    }
+
+    // regenerate when attendee or QR changes
+    setIdFrontPreviewUrl("");
+    setIsGeneratingPreview(false);
+  }, [idModalOpen, idModalAttendee, idQrDataUrl]);
+
+  useEffect(() => {
     setSelectedRowKeys((current) =>
       current.filter((key) => allRows.some((row) => row.key === key)),
     );
@@ -785,6 +966,19 @@ export default function AdminPage() {
 
       setIndividualRows(Array.isArray(data.individual) ? data.individual : []);
       setBulkRows(Array.isArray(data.bulk) ? data.bulk : []);
+
+      const callerResponse = await fetch(`/api/callers?${new URLSearchParams({ conference }).toString()}`, {
+        cache: "no-store",
+      });
+      const callerData = (await callerResponse.json()) as CallerLogResponse;
+
+      if (!callerResponse.ok) {
+        setStatus(callerData.error ?? "Unable to load caller logs.");
+        setIsLoading(false);
+        return false;
+      }
+
+      setCallerLogRows(Array.isArray(callerData.attendees) ? callerData.attendees : []);
       setIsLoading(false);
       return true;
     } catch {
@@ -921,8 +1115,42 @@ export default function AdminPage() {
 
   async function refreshData() {
     if (!isAuthenticated) return;
-    await loadAdminData(username, ADMIN_PASSWORD, selectedConference);
-    setStatus(`Data refreshed for ${conferenceLabel(selectedConference)}.`);
+    const ok = await loadAdminData(username, ADMIN_PASSWORD, selectedConference);
+    if (ok) {
+      setStatus(`Data refreshed for ${conferenceLabel(selectedConference)}.`);
+    }
+  }
+
+  async function resetCallerLogRow(row: CallerLogRow) {
+    setCallerActionKey(row.attendeeKey);
+    setStatus("");
+
+    try {
+      const response = await fetch("/api/callers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "reset",
+          attendeeKey: row.attendeeKey,
+        }),
+      });
+
+      const data = (await response.json()) as { error?: string };
+
+      if (!response.ok) {
+        setStatus(data.error ?? "Unable to reset caller row.");
+        return;
+      }
+
+      const ok = await loadAdminData(username, ADMIN_PASSWORD, selectedConference);
+      if (ok) {
+        setStatus(`${row.fullName} has been reset to available.`);
+      }
+    } catch {
+      setStatus("Network error while resetting caller row.");
+    } finally {
+      setCallerActionKey("");
+    }
   }
 
   function toggleRowSelection(key: string) {
@@ -1381,7 +1609,461 @@ export default function AdminPage() {
     setIsSaving(false);
   }
 
-  function openExportModal(format: ExportFormat) {
+  async function openGenerateIdModal(row: AdminRecord) {
+    setIdModalAttendee({
+      name: row.name,
+      attendeeId: row.id,
+    });
+
+    try {
+      const qrUrl = new URL("/qrreader", window.location.origin);
+      qrUrl.searchParams.set("sourceType", row.sourceType);
+      qrUrl.searchParams.set("sourceId", row.id);
+      qrUrl.searchParams.set("name", row.name);
+
+      const qrDataUrl = await QRCode.toDataURL(qrUrl.toString(), {
+        errorCorrectionLevel: "H",
+        margin: 1,
+        width: 300,
+        color: {
+          dark: "#000000",
+          light: "#ffffff",
+        },
+      });
+      setIdQrDataUrl(qrDataUrl);
+      setIdModalOpen(true);
+    } catch {
+      setStatus("Unable to generate QR code.");
+    }
+  }
+
+  function closeIdModal() {
+    setIdModalOpen(false);
+    setIdModalAttendee(null);
+    setIdQrDataUrl("");
+  }
+
+  function renderFrontIdCard(scale = 1) {
+    if (!idModalAttendee) return null;
+
+    // If rendering inside the modal preview (scale != 1) show a centered scaled card
+    if (scale !== 1) {
+      // If we already generated a preview image, render that for perfect parity
+      if (idFrontPreviewUrl) {
+        return (
+          <img
+            src={idFrontPreviewUrl}
+            alt="Front ID preview"
+            className={`${archivoBlack.className} block`}
+            style={{
+              width: `${ID_BASE_WIDTH * scale}px`,
+              height: `${ID_BASE_HEIGHT * scale}px`,
+              objectFit: "contain",
+            }}
+          />
+        );
+      }
+
+      // Otherwise fall back to the DOM-rendered scaled card and trigger generation
+      if (!isGeneratingPreview) {
+        setIsGeneratingPreview(true);
+        void generateIdPreviewDataUrl("front", scale)
+          .then((dataUrl) => {
+            if (dataUrl) setIdFrontPreviewUrl(dataUrl);
+          })
+          .finally(() => setIsGeneratingPreview(false));
+      }
+
+      const typography = getIdNameTypography(idModalAttendee.name);
+      const fontSize = typography.fontSize * scale;
+      const lineHeight = typography.lineHeight * scale;
+
+      return (
+        <div
+          className={`relative shrink-0 overflow-hidden ${archivoBlack.className}`}
+          style={{
+            width: `${ID_BASE_WIDTH * scale}px`,
+            height: `${ID_BASE_HEIGHT * scale}px`,
+            backgroundImage: 'url("/FRONT ID.png")',
+            backgroundRepeat: "no-repeat",
+            backgroundPosition: "center",
+            backgroundSize: "100% 100%",
+          }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              width: `${FRONT_NAME_BOX.width * scale}px`,
+              height: `${FRONT_NAME_BOX.height * scale}px`,
+              left: `${FRONT_NAME_BOX.left * scale}px`,
+              top: `${FRONT_NAME_BOX.top * scale}px`,
+              fontFamily: "Archivo Black, system-ui, sans-serif",
+              fontStyle: "normal",
+              fontWeight: 400,
+              fontSize: `${fontSize}px`,
+              lineHeight: `${lineHeight}px`,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              textAlign: "center",
+              color: "#FFFFFF",
+              textTransform: "uppercase",
+              whiteSpace: "normal",
+              wordBreak: "break-word",
+              overflowWrap: "anywhere",
+              overflow: "hidden",
+            }}
+          >
+            <span style={{ display: "inline-block", padding: "0 4px" }}>
+              {idModalAttendee.name.toUpperCase()}
+            </span>
+          </div>
+        </div>
+      );
+    }
+
+    // For non-preview (export) keep absolute placement matching design coordinates
+    return (
+      <div
+        className={archivoBlack.className}
+        style={{
+          position: "absolute",
+          width: `${ID_BASE_WIDTH}px`,
+          height: `${ID_BASE_HEIGHT}px`,
+          left: "658px",
+          top: "300px",
+          backgroundImage: 'url("/FRONT ID.png")',
+          backgroundRepeat: "no-repeat",
+          backgroundPosition: "center",
+          backgroundSize: "100% 100%",
+        }}
+      >
+        <div
+          style={{
+            position: "absolute",
+            width: `${FRONT_NAME_BOX.width}px`,
+            height: `${FRONT_NAME_BOX.height}px`,
+            left: `${FRONT_NAME_BOX.left}px`,
+            top: `${FRONT_NAME_BOX.top}px`,
+            fontFamily: "Archivo Black, system-ui, sans-serif",
+            fontStyle: "normal",
+            fontWeight: 400,
+            fontSize: "21px",
+            lineHeight: "23px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            textAlign: "center",
+            color: "#FFFFFF",
+            textTransform: "uppercase",
+            whiteSpace: "normal",
+            wordBreak: "break-word",
+            overflowWrap: "anywhere",
+            overflow: "hidden",
+          }}
+        >
+          <span style={{ display: "inline-block", padding: "0 4px" }}>
+            {idModalAttendee.name.toUpperCase()}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  function renderBackIdCard(scale = 1) {
+    if (!idQrDataUrl) return null;
+
+    return (
+      <div
+        className="relative shrink-0 overflow-hidden"
+        style={{
+          width: `${ID_BASE_WIDTH * scale}px`,
+          height: `${ID_BASE_HEIGHT * scale}px`,
+          backgroundImage: 'url("/BACK%20ID.png")',
+          backgroundRepeat: "no-repeat",
+          backgroundPosition: "center",
+          backgroundSize: "100% 100%",
+        }}
+      >
+        <div
+          style={{
+            position: "absolute",
+            width: `${BACK_QR_BOX.width * scale}px`,
+            height: `${BACK_QR_BOX.height * scale}px`,
+            left: `${BACK_QR_BOX.left * scale}px`,
+            top: `${BACK_QR_BOX.top * scale}px`,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <img
+            src={idQrDataUrl}
+            alt="Attendee QR"
+            style={{ width: "100%", height: "100%", objectFit: "contain" }}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  async function downloadIdCard(side: "front" | "back") {
+    if (!idModalAttendee || !idQrDataUrl) return;
+
+    try {
+      await document.fonts.ready;
+
+      // Probe the computed font-family produced by next/font so canvas uses the same family
+      let archivoFamily = "Archivo Black";
+      try {
+        const probe = document.createElement("span");
+        probe.className = archivoBlack.className;
+        probe.style.position = "absolute";
+        probe.style.opacity = "0";
+        probe.style.pointerEvents = "none";
+        probe.textContent = "x";
+        document.body.appendChild(probe);
+        const computed = getComputedStyle(probe).fontFamily;
+        if (computed && computed.trim()) archivoFamily = computed;
+        document.body.removeChild(probe);
+      } catch {
+        // fall back to literal family name
+      }
+
+      const canvas = document.createElement("canvas");
+      canvas.width = ID_EXPORT_WIDTH_PX;
+      canvas.height = ID_EXPORT_HEIGHT_PX;
+
+      const context = canvas.getContext("2d");
+      if (!context) {
+        throw new Error("Canvas is unavailable.");
+      }
+
+      const scaleX = canvas.width / ID_BASE_WIDTH;
+      const scaleY = canvas.height / ID_BASE_HEIGHT;
+      const templateImage = await loadImage(side === "front" ? "/FRONT%20ID.png" : "/BACK%20ID.png");
+
+      context.drawImage(templateImage, 0, 0, canvas.width, canvas.height);
+
+      if (side === "front") {
+        const typography = getIdNameTypography(idModalAttendee.name.toUpperCase());
+        const sizeScale = Math.min(scaleX, scaleY);
+        const baseFontSize = typography.fontSize * sizeScale;
+        const baseLineHeight = typography.lineHeight * sizeScale;
+        const boxLeft = FRONT_NAME_BOX.left * scaleX;
+        const boxTop = FRONT_NAME_BOX.top * scaleY;
+        const boxWidth = FRONT_NAME_BOX.width * scaleX;
+        const boxHeight = FRONT_NAME_BOX.height * scaleY;
+        const nameText = idModalAttendee.name.toUpperCase();
+
+        let chosenFontSize = baseFontSize;
+        let chosenLines = [nameText];
+
+        for (let fontSize = Math.max(baseFontSize, 10); fontSize >= 10; fontSize -= 1) {
+          context.font = `400 ${fontSize}px ${archivoFamily}`;
+          const lines: string[] = [];
+          const words = nameText.split(/\s+/).filter(Boolean);
+          let currentLine = "";
+
+          const pushWord = (word: string) => {
+            const candidate = currentLine ? `${currentLine} ${word}` : word;
+            if (context.measureText(candidate).width <= boxWidth || !currentLine) {
+              currentLine = candidate;
+              return;
+            }
+
+            lines.push(currentLine);
+            currentLine = word;
+          };
+
+          for (const word of words) {
+            if (context.measureText(word).width <= boxWidth) {
+              pushWord(word);
+              continue;
+            }
+
+            for (const character of word) {
+              const candidate = currentLine ? `${currentLine}${character}` : character;
+              if (context.measureText(candidate).width <= boxWidth || !currentLine) {
+                currentLine = candidate;
+              } else {
+                lines.push(currentLine);
+                currentLine = character;
+              }
+            }
+          }
+
+          if (currentLine) {
+            lines.push(currentLine);
+          }
+
+          if (lines.length <= 2) {
+            chosenFontSize = fontSize;
+            chosenLines = lines;
+            break;
+          }
+        }
+
+        context.fillStyle = "#FFFFFF";
+        context.textAlign = "center";
+        context.textBaseline = "middle";
+        context.font = `400 ${chosenFontSize}px ${archivoFamily}`;
+
+        const totalTextHeight = chosenLines.length * baseLineHeight;
+        const startY = boxTop + (boxHeight - totalTextHeight) / 2 + baseLineHeight / 2;
+
+        chosenLines.slice(0, 2).forEach((line, index) => {
+          context.fillText(line, boxLeft + boxWidth / 2, startY + index * baseLineHeight);
+        });
+      } else {
+        const qrImage = await loadImage(idQrDataUrl);
+        context.drawImage(
+          qrImage,
+          BACK_QR_BOX.left * scaleX,
+          BACK_QR_BOX.top * scaleY,
+          BACK_QR_BOX.width * scaleX,
+          BACK_QR_BOX.height * scaleY,
+        );
+      }
+
+        const blob = await new Promise<Blob | null>((resolve) => {
+        canvas.toBlob((result) => resolve(result), "image/png");
+      });
+
+      if (!blob) {
+        throw new Error("Unable to export ID card.");
+      }
+
+      const fileNameBase = sanitizeFileName(`${idModalAttendee.name}-${side}-id-1416x2000`);
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = `${fileNameBase}.png`;
+      link.click();
+      URL.revokeObjectURL(objectUrl);
+    } catch {
+      setStatus(`Unable to download the ${side} ID.`);
+    }
+  }
+
+  async function generateIdPreviewDataUrl(side: "front" | "back", scale = 2.25) {
+    if (!idModalAttendee || !idQrDataUrl) return null;
+
+    await document.fonts.ready;
+
+    let archivoFamily = "Archivo Black";
+    try {
+      const probe = document.createElement("span");
+      probe.className = archivoBlack.className;
+      probe.style.position = "absolute";
+      probe.style.opacity = "0";
+      probe.style.pointerEvents = "none";
+      probe.textContent = "x";
+      document.body.appendChild(probe);
+      const computed = getComputedStyle(probe).fontFamily;
+      if (computed && computed.trim()) archivoFamily = computed;
+      document.body.removeChild(probe);
+    } catch {
+      // fallback
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(ID_BASE_WIDTH * scale);
+    canvas.height = Math.round(ID_BASE_HEIGHT * scale);
+    const context = canvas.getContext("2d");
+    if (!context) return null;
+
+    const scaleX = canvas.width / ID_BASE_WIDTH;
+    const scaleY = canvas.height / ID_BASE_HEIGHT;
+    const templateImage = await loadImage(side === "front" ? "/FRONT%20ID.png" : "/BACK%20ID.png");
+
+    context.drawImage(templateImage, 0, 0, canvas.width, canvas.height);
+
+    if (side === "front") {
+      const typography = getIdNameTypography(idModalAttendee.name.toUpperCase());
+      const sizeScale = Math.min(scaleX, scaleY);
+      const baseFontSize = typography.fontSize * sizeScale;
+      const baseLineHeight = typography.lineHeight * sizeScale;
+      const boxLeft = FRONT_NAME_BOX.left * scaleX;
+      const boxTop = FRONT_NAME_BOX.top * scaleY;
+      const boxWidth = FRONT_NAME_BOX.width * scaleX;
+      const boxHeight = FRONT_NAME_BOX.height * scaleY;
+      const nameText = idModalAttendee.name.toUpperCase();
+
+      let chosenFontSize = baseFontSize;
+      let chosenLines = [nameText];
+
+      for (let fontSize = Math.max(baseFontSize, 10); fontSize >= 10; fontSize -= 1) {
+        context.font = `400 ${fontSize}px ${archivoFamily}`;
+        const lines: string[] = [];
+        const words = nameText.split(/\s+/).filter(Boolean);
+        let currentLine = "";
+
+        const pushWord = (word: string) => {
+          const candidate = currentLine ? `${currentLine} ${word}` : word;
+          if (context.measureText(candidate).width <= boxWidth || !currentLine) {
+            currentLine = candidate;
+            return;
+          }
+
+          lines.push(currentLine);
+          currentLine = word;
+        };
+
+        for (const word of words) {
+          if (context.measureText(word).width <= boxWidth) {
+            pushWord(word);
+            continue;
+          }
+
+          for (const character of word) {
+            const candidate = currentLine ? `${currentLine}${character}` : character;
+            if (context.measureText(candidate).width <= boxWidth || !currentLine) {
+              currentLine = candidate;
+            } else {
+              lines.push(currentLine);
+              currentLine = character;
+            }
+          }
+        }
+
+        if (currentLine) {
+          lines.push(currentLine);
+        }
+
+        if (lines.length <= 2) {
+          chosenFontSize = fontSize;
+          chosenLines = lines;
+          break;
+        }
+      }
+
+      context.fillStyle = "#FFFFFF";
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      context.font = `400 ${chosenFontSize}px ${archivoFamily}`;
+
+      const totalTextHeight = chosenLines.length * baseLineHeight;
+      const startY = boxTop + (boxHeight - totalTextHeight) / 2 + baseLineHeight / 2;
+
+      chosenLines.slice(0, 2).forEach((line, index) => {
+        context.fillText(line, boxLeft + boxWidth / 2, startY + index * baseLineHeight);
+      });
+    } else {
+      const qrImage = await loadImage(idQrDataUrl);
+      context.drawImage(
+        qrImage,
+        BACK_QR_BOX.left * scaleX,
+        BACK_QR_BOX.top * scaleY,
+        BACK_QR_BOX.width * scaleX,
+        BACK_QR_BOX.height * scaleY,
+      );
+    }
+
+    return canvas.toDataURL("image/png");
+  }
+
+  function openExportModal(format: "pdf" | "excel") {
     if (!exportPreviewRows.length) {
       setStatus("No visible table rows are available for export.");
       return;
@@ -1813,6 +2495,17 @@ export default function AdminPage() {
               </button>
               <button
                 type="button"
+                onClick={() => setActiveTab("callers")}
+                className={`flex-none rounded-lg px-3 py-2 text-left text-sm font-semibold transition whitespace-nowrap ${
+                  activeTab === "callers"
+                    ? "bg-amber-200 text-slate-900"
+                    : "bg-slate-900/70 text-amber-100 hover:bg-slate-800"
+                }`}
+              >
+                Caller Logs
+              </button>
+              <button
+                type="button"
                 onClick={() => setActiveTab("registrations")}
                 className={`flex-none rounded-lg px-3 py-2 text-left text-sm font-semibold transition whitespace-nowrap ${
                   activeTab === "registrations"
@@ -1821,6 +2514,17 @@ export default function AdminPage() {
                 }`}
               >
                 Registration
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab("number-requests")}
+                className={`flex-none rounded-lg px-3 py-2 text-left text-sm font-semibold transition whitespace-nowrap ${
+                  activeTab === "number-requests"
+                    ? "bg-amber-200 text-slate-900"
+                    : "bg-slate-900/70 text-amber-100 hover:bg-slate-800"
+                }`}
+              >
+                Number Requests
               </button>
             </nav>
 
@@ -2107,6 +2811,148 @@ export default function AdminPage() {
                     </article>
                   </div>
                 </article>
+              </div>
+            ) : activeTab === "callers" ? (
+              <div>
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-lg font-bold text-amber-100">
+                      Caller Logs
+                    </h3>
+                    <p className="text-xs text-amber-200">
+                      Recent call activity for {conferenceLabel(selectedConference)}.
+                    </p>
+                  </div>
+                  <span className="rounded-lg border border-amber-100/30 px-2.5 py-1 text-xs text-amber-100">
+                    {callerLogSummary.total} entries
+                  </span>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                  <article className="rounded-xl border border-amber-100/20 bg-slate-900/70 p-4">
+                    <p className="text-xs text-amber-200">Total Logs</p>
+                    <p className="mt-2 text-3xl font-bold text-amber-100">
+                      {callerLogSummary.total}
+                    </p>
+                  </article>
+                  <article className="rounded-xl border border-sky-200/20 bg-sky-500/10 p-4">
+                    <p className="text-xs text-sky-200">Calling</p>
+                    <p className="mt-2 text-3xl font-bold text-sky-100">
+                      {callerLogSummary.calling}
+                    </p>
+                  </article>
+                  <article className="rounded-xl border border-emerald-200/20 bg-emerald-500/10 p-4">
+                    <p className="text-xs text-emerald-200">Confirmed</p>
+                    <p className="mt-2 text-3xl font-bold text-emerald-100">
+                      {callerLogSummary.confirmed}
+                    </p>
+                  </article>
+                  <article className="rounded-xl border border-amber-200/20 bg-amber-500/10 p-4">
+                    <p className="text-xs text-amber-200">Follow-Up Needed</p>
+                    <p className="mt-2 text-3xl font-bold text-amber-100">
+                      {callerLogSummary.follow_up_needed}
+                    </p>
+                  </article>
+                  <article className="rounded-xl border border-rose-200/20 bg-rose-500/10 p-4">
+                    <p className="text-xs text-rose-200">Not Attending</p>
+                    <p className="mt-2 text-3xl font-bold text-rose-100">
+                      {callerLogSummary.not_attending}
+                    </p>
+                  </article>
+                </div>
+
+                <div className="mb-3 mt-4 grid gap-2 rounded-xl border border-amber-100/20 bg-slate-900/50 p-2 md:p-3 grid-cols-1 sm:grid-cols-[minmax(0,1fr)_220px]">
+                  <input
+                    value={callerSearch}
+                    onChange={(event) => setCallerSearch(event.target.value)}
+                    placeholder="Search attendee, caller, church, ministry..."
+                    className="rounded-lg border border-amber-100/30 bg-slate-950/50 px-3 py-2 text-sm w-full"
+                  />
+
+                  <select
+                    value={callerStatusFilter}
+                    onChange={(event) =>
+                      setCallerStatusFilter(event.target.value as "all" | CallStatus)
+                    }
+                    className="rounded-lg border border-amber-100/30 bg-slate-950/50 px-3 py-2 text-sm"
+                  >
+                    <option value="all">All Statuses</option>
+                    <option value="available">Available</option>
+                    <option value="calling">Calling</option>
+                    <option value="confirmed">Confirmed</option>
+                    <option value="not_attending">Not Attending</option>
+                    <option value="follow_up_needed">Follow-Up Needed</option>
+                  </select>
+                </div>
+
+                <div className="overflow-x-auto rounded-xl border border-amber-100/20">
+                  <table className="min-w-[1500px] w-full text-left text-sm">
+                    <thead className="bg-slate-900/80 text-amber-200">
+                      <tr>
+                        <th className="px-3 py-2">Attendee</th>
+                        <th className="px-3 py-2">Phone</th>
+                        <th className="px-3 py-2">Church</th>
+                        <th className="px-3 py-2">Ministry</th>
+                        <th className="px-3 py-2">Conference</th>
+                        <th className="px-3 py-2">Status</th>
+                        <th className="px-3 py-2">Claimed By</th>
+                        <th className="px-3 py-2">Claimed At</th>
+                        <th className="px-3 py-2">Status Set By</th>
+                        <th className="px-3 py-2">Status Set At</th>
+                        <th className="px-3 py-2">Updated</th>
+                        <th className="px-3 py-2">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredCallerLogRows.length ? (
+                        filteredCallerLogRows.map((row) => (
+                          <tr key={row.attendeeKey} className="border-t border-amber-100/10 align-top">
+                            <td className="px-3 py-2">
+                              <p className="font-semibold text-amber-100">{row.fullName}</p>
+                              <p className="mt-1 text-[11px] text-amber-300/80">{row.address || "No address"}</p>
+                            </td>
+                            <td className="px-3 py-2 text-amber-100/90">{row.phoneNumber || "-"}</td>
+                            <td className="px-3 py-2 text-amber-100/90">{row.church || "-"}</td>
+                            <td className="px-3 py-2 text-amber-100/90">{row.ministry || "-"}</td>
+                            <td className="px-3 py-2 text-amber-100/90">{conferenceLabel(row.conference)}</td>
+                            <td className="px-3 py-2">
+                              <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide ${callerStatusTone(row.callStatus)}`}>
+                                {callerStatusLabels[row.callStatus]}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 text-amber-100/90">{row.claimedBy ?? "-"}</td>
+                            <td className="px-3 py-2 text-amber-100/90">{formatDate(row.claimedAt ?? "")}</td>
+                            <td className="px-3 py-2 text-amber-100/90">{row.statusSetBy ?? "-"}</td>
+                            <td className="px-3 py-2 text-amber-100/90">{formatDate(row.statusSetAt ?? "")}</td>
+                            <td className="px-3 py-2 text-amber-100/90">{formatDate(row.updatedAt)}</td>
+                            <td className="px-3 py-2">
+                              {row.callStatus === "confirmed" ? (
+                                <button
+                                  type="button"
+                                  onClick={() => void resetCallerLogRow(row)}
+                                  disabled={callerActionKey === row.attendeeKey}
+                                  className="rounded-md border border-emerald-200/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-semibold text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-60"
+                                >
+                                  {callerActionKey === row.attendeeKey
+                                    ? "Resetting..."
+                                    : "Reset to Available"}
+                                </button>
+                              ) : (
+                                <span className="text-[11px] text-amber-300/70">No action</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td colSpan={12} className="px-3 py-6 text-center text-amber-200">
+                            No caller logs found for the current filters.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             ) : (
               <div>
@@ -2674,6 +3520,13 @@ export default function AdminPage() {
                                   <div className="flex gap-2">
                                     <button
                                       type="button"
+                                      onClick={() => openGenerateIdModal(row)}
+                                      className="rounded-md border border-sky-200/40 px-2 py-1 text-xs text-sky-200 hover:bg-sky-900/20"
+                                    >
+                                      ID
+                                    </button>
+                                    <button
+                                      type="button"
                                       onClick={() => openEditFromAllRow(row)}
                                       className="rounded-md border border-amber-100/40 px-2 py-1 text-xs text-amber-100 hover:bg-slate-800"
                                     >
@@ -2777,6 +3630,13 @@ export default function AdminPage() {
                             )}
 
                             <div className="mt-4 flex gap-2 pt-3 border-t border-amber-100/10">
+                              <button
+                                type="button"
+                                onClick={() => openGenerateIdModal(row)}
+                                className="flex-1 rounded-lg border border-sky-200/40 bg-sky-900/10 py-2 text-xs font-semibold text-sky-200 hover:bg-sky-900/20"
+                              >
+                                Generate ID
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => openEditFromAllRow(row)}
@@ -3566,6 +4426,78 @@ export default function AdminPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      ) : null}
+
+      {idModalOpen && idModalAttendee && idQrDataUrl ? (
+        <div className="fixed inset-0 z-50 overflow-auto bg-black/85 p-4">
+          <div className="mx-auto flex min-h-full w-full max-w-[1800px] flex-col gap-4 rounded-[2rem] border border-white/10 bg-slate-950/95 p-4 shadow-[0_24px_80px_rgba(0,0,0,0.6)] backdrop-blur-xl sm:p-6">
+            <div className="flex flex-col gap-3 border-b border-white/10 pb-4 xl:flex-row xl:items-center xl:justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.34em] text-amber-300/80">Generate ID Card</p>
+                <h3 className={`mt-1 text-2xl font-black tracking-tight text-white ${archivoBlack.className}`}>
+                  {idModalAttendee.name.toUpperCase()}
+                </h3>
+                <p className="mt-1 text-sm text-slate-300">
+                  Preview the front and back cards, then download each file separately.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void downloadIdCard("front")}
+                  className="rounded-lg border border-sky-200/40 bg-sky-900/15 px-4 py-2 text-sm font-semibold text-sky-100 hover:bg-sky-900/25"
+                >
+                  Download Front ID
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void downloadIdCard("back")}
+                  className="rounded-lg border border-sky-200/40 bg-sky-900/15 px-4 py-2 text-sm font-semibold text-sky-100 hover:bg-sky-900/25"
+                >
+                  Download Back ID
+                </button>
+                <button
+                  type="button"
+                  onClick={closeIdModal}
+                  className="rounded-lg border border-white/20 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+
+            <div className="grid gap-4 xl:grid-cols-2">
+              <section className="rounded-2xl border border-white/10 bg-white/5 p-4 shadow-[0_16px_50px_rgba(0,0,0,0.25)]">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.3em] text-amber-300/80">Front Preview</p>
+                    <p className="text-sm text-slate-300">Attendee name is limited to two lines and auto-shrinks when needed.</p>
+                  </div>
+                </div>
+                <div className="overflow-auto rounded-[1.5rem] bg-[#615F5F] p-6">
+                  <div className="flex justify-center">
+                    {renderFrontIdCard(2.25)}
+                  </div>
+                </div>
+              </section>
+
+              <section className="rounded-2xl border border-white/10 bg-white/5 p-4 shadow-[0_16px_50px_rgba(0,0,0,0.25)]">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.3em] text-amber-300/80">Back Preview</p>
+                    <p className="text-sm text-slate-300">QR code is preserved as a separate high-resolution download.</p>
+                  </div>
+                </div>
+                <div className="overflow-auto rounded-[1.5rem] bg-[#615F5F] p-6">
+                  <div className="flex justify-center">
+                    {renderBackIdCard(2.25)}
+                  </div>
+                </div>
+              </section>
+            </div>
           </div>
         </div>
       ) : null}
