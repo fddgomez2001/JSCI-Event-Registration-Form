@@ -16,8 +16,8 @@ const committeeNames = [
   "Quennie",
 ] as const;
 const loginStorageKey = "qrreader-committee-login";
-const SCAN_INTERVAL_MS = 180;
-const MAX_SCAN_WIDTH = 720;
+const SCAN_INTERVAL_MS = 80; // reduced interval for faster retries (about 12.5 FPS)
+const MAX_SCAN_WIDTH = 480; // lower max width to process fewer pixels
 const tableViews = ["scanner", "checkin", "lunch", "log"] as const;
 
 type TableView = (typeof tableViews)[number];
@@ -207,9 +207,9 @@ export default function QRReaderPage() {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: "environment" },
-          width: { ideal: 1280, max: 1280 },
-          height: { ideal: 720, max: 720 },
-          frameRate: { ideal: 24, max: 30 },
+          width: { ideal: 640, max: 1280 },
+          height: { ideal: 360, max: 720 },
+          frameRate: { ideal: 30, max: 30 },
         },
       });
       if (videoRef.current) {
@@ -288,12 +288,22 @@ export default function QRReaderPage() {
       return;
     }
 
-    const sourceWidth = video.videoWidth;
-    const sourceHeight = video.videoHeight;
+    const sourceWidth = video.videoWidth || 640;
+    const sourceHeight = video.videoHeight || 360;
+
+    // Crop to center region to reduce processed pixels (most QR codes will be near center)
+    const CROP_RATIO = 0.6; // process central 60% area
+    const sw = Math.max(1, Math.floor(sourceWidth * CROP_RATIO));
+    const sh = Math.max(1, Math.floor(sourceHeight * CROP_RATIO));
+    const sx = Math.floor((sourceWidth - sw) / 2);
+    const sy = Math.floor((sourceHeight - sh) / 2);
+
     const scale = sourceWidth > MAX_SCAN_WIDTH ? MAX_SCAN_WIDTH / sourceWidth : 1;
-    canvas.width = Math.max(1, Math.floor(sourceWidth * scale));
-    canvas.height = Math.max(1, Math.floor(sourceHeight * scale));
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.width = Math.max(1, Math.floor(sw * scale));
+    canvas.height = Math.max(1, Math.floor(sh * scale));
+
+    // draw only the cropped center region scaled to canvas
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const result = jsQR(imageData.data, imageData.width, imageData.height, {
       inversionAttempts: "attemptBoth",

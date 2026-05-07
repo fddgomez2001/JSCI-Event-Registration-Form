@@ -33,8 +33,8 @@ const ID_BASE_WIDTH = 250;
 const ID_BASE_HEIGHT = 353;
 const ID_EXPORT_WIDTH_PX = 1416;
 const ID_EXPORT_HEIGHT_PX = 2000;
-const FRONT_NAME_BOX = { left: 19, top: 194, width: 211, height: 49 };
-const BACK_QR_BOX = { left: 50, top: 56, width: 149, height: 147 };
+const FRONT_NAME_BOX = { left: 41, top: 165, width: 168, height: 63 };
+const BACK_QR_BOX = { left: 47, top: 99, width: 156, height: 155 };
 
 type IndividualRow = {
   id: string;
@@ -409,17 +409,78 @@ async function loadImage(src: string) {
   });
 }
 
-function getIdNameTypography(name: string) {
-  if (name.length > 35) {
-    return { fontSize: 13, lineHeight: 16 };
+function getIdNameTypography(_name: string) {
+  // Enforce fixed typography per design: 22px font, 94% line-height
+  return { fontSize: 22, lineHeight: 20.68 };
+}
+
+function splitAttendeeName(name: string) {
+  const words = String(name ?? "").trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return { firstNameText: "", lastWordText: "" };
+  if (words.length === 1) return { firstNameText: words[0], lastWordText: "" };
+  return {
+    firstNameText: words.slice(0, -1).join(" "),
+    lastWordText: words[words.length - 1],
+  };
+}
+
+function fitTextWithEllipsis(
+  context: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+) {
+  if (context.measureText(text).width <= maxWidth) return text;
+  let trimmed = text;
+  while (trimmed.length > 0 && context.measureText(`${trimmed}...`).width > maxWidth) {
+    trimmed = trimmed.slice(0, -1);
   }
-  if (name.length > 28) {
-    return { fontSize: 14, lineHeight: 17 };
+  return trimmed ? `${trimmed}...` : "...";
+}
+
+function wrapTextLines(
+  context: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+  maxLines: number,
+) {
+  if (!text.trim()) return [];
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let currentLine = "";
+
+  const pushWord = (word: string) => {
+    const candidate = currentLine ? `${currentLine} ${word}` : word;
+    if (context.measureText(candidate).width <= maxWidth || !currentLine) {
+      currentLine = candidate;
+      return;
+    }
+    lines.push(currentLine);
+    currentLine = word;
+  };
+
+  for (const word of words) {
+    if (context.measureText(word).width <= maxWidth) {
+      pushWord(word);
+      continue;
+    }
+
+    for (const ch of word) {
+      const candidate = currentLine ? `${currentLine}${ch}` : ch;
+      if (context.measureText(candidate).width <= maxWidth || !currentLine) {
+        currentLine = candidate;
+      } else {
+        lines.push(currentLine);
+        currentLine = ch;
+      }
+    }
   }
-  if (name.length > 18) {
-    return { fontSize: 18, lineHeight: 20 };
-  }
-  return { fontSize: 21, lineHeight: 23 };
+
+  if (currentLine) lines.push(currentLine);
+  if (lines.length <= maxLines) return lines;
+
+  const mergedLast = lines.slice(maxLines - 1).join(" ");
+  const fittedLast = fitTextWithEllipsis(context, mergedLast, maxWidth);
+  return [...lines.slice(0, maxLines - 1), fittedLast];
 }
 
 export default function AdminPage() {
@@ -1677,6 +1738,8 @@ export default function AdminPage() {
       const typography = getIdNameTypography(idModalAttendee.name);
       const fontSize = typography.fontSize * scale;
       const lineHeight = typography.lineHeight * scale;
+      const upperName = idModalAttendee.name.toUpperCase();
+      const { firstNameText, lastWordText } = splitAttendeeName(upperName);
 
       return (
         <div
@@ -1697,16 +1760,17 @@ export default function AdminPage() {
               height: `${FRONT_NAME_BOX.height * scale}px`,
               left: `${FRONT_NAME_BOX.left * scale}px`,
               top: `${FRONT_NAME_BOX.top * scale}px`,
-              fontFamily: "Archivo Black, system-ui, sans-serif",
+              fontFamily: "'Prachason Neue', system-ui, sans-serif",
               fontStyle: "normal",
-              fontWeight: 400,
+              fontWeight: 700,
               fontSize: `${fontSize}px`,
               lineHeight: `${lineHeight}px`,
               display: "flex",
+              flexDirection: "column",
               alignItems: "center",
               justifyContent: "center",
               textAlign: "center",
-              color: "#FFFFFF",
+              color: "#000000",
               textTransform: "uppercase",
               whiteSpace: "normal",
               wordBreak: "break-word",
@@ -1714,15 +1778,23 @@ export default function AdminPage() {
               overflow: "hidden",
             }}
           >
-            <span style={{ display: "inline-block", padding: "0 4px" }}>
-              {idModalAttendee.name.toUpperCase()}
+            <span style={{ display: "inline-block", padding: "0 4px", fontWeight: 700 }}>
+              {firstNameText}
             </span>
+            {lastWordText ? (
+              <span style={{ display: "inline-block", padding: "0 4px", fontWeight: 400 }}>
+                {lastWordText}
+              </span>
+            ) : null}
           </div>
         </div>
       );
     }
 
     // For non-preview (export) keep absolute placement matching design coordinates
+    const upperName = idModalAttendee.name.toUpperCase();
+    const { firstNameText, lastWordText } = splitAttendeeName(upperName);
+
     return (
       <div
         className={archivoBlack.className}
@@ -1730,7 +1802,7 @@ export default function AdminPage() {
           position: "absolute",
           width: `${ID_BASE_WIDTH}px`,
           height: `${ID_BASE_HEIGHT}px`,
-          left: "658px",
+          left: "666px",
           top: "300px",
           backgroundImage: 'url("/FRONT ID.png")',
           backgroundRepeat: "no-repeat",
@@ -1745,16 +1817,17 @@ export default function AdminPage() {
             height: `${FRONT_NAME_BOX.height}px`,
             left: `${FRONT_NAME_BOX.left}px`,
             top: `${FRONT_NAME_BOX.top}px`,
-            fontFamily: "Archivo Black, system-ui, sans-serif",
+            fontFamily: "'Prachason Neue', system-ui, sans-serif",
             fontStyle: "normal",
-            fontWeight: 400,
-            fontSize: "21px",
-            lineHeight: "23px",
+            fontWeight: 700,
+            fontSize: "22px",
+            lineHeight: "20.68px",
             display: "flex",
+            flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
             textAlign: "center",
-            color: "#FFFFFF",
+            color: "#000000",
             textTransform: "uppercase",
             whiteSpace: "normal",
             wordBreak: "break-word",
@@ -1762,9 +1835,14 @@ export default function AdminPage() {
             overflow: "hidden",
           }}
         >
-          <span style={{ display: "inline-block", padding: "0 4px" }}>
-            {idModalAttendee.name.toUpperCase()}
+          <span style={{ display: "inline-block", padding: "0 4px", fontWeight: 700 }}>
+            {firstNameText}
           </span>
+          {lastWordText ? (
+            <span style={{ display: "inline-block", padding: "0 4px", fontWeight: 400 }}>
+              {lastWordText}
+            </span>
+          ) : null}
         </div>
       </div>
     );
@@ -1856,63 +1934,35 @@ export default function AdminPage() {
         const boxHeight = FRONT_NAME_BOX.height * scaleY;
         const nameText = idModalAttendee.name.toUpperCase();
 
-        let chosenFontSize = baseFontSize;
-        let chosenLines = [nameText];
+        const { firstNameText, lastWordText } = splitAttendeeName(nameText);
+        context.font = `700 ${baseFontSize}px 'Prachason Neue', ${archivoFamily}`;
+        const firstLines = wrapTextLines(
+          context,
+          firstNameText,
+          boxWidth,
+          lastWordText ? 2 : 3,
+        );
 
-        for (let fontSize = Math.max(baseFontSize, 10); fontSize >= 10; fontSize -= 1) {
-          context.font = `400 ${fontSize}px ${archivoFamily}`;
-          const lines: string[] = [];
-          const words = nameText.split(/\s+/).filter(Boolean);
-          let currentLine = "";
-
-          const pushWord = (word: string) => {
-            const candidate = currentLine ? `${currentLine} ${word}` : word;
-            if (context.measureText(candidate).width <= boxWidth || !currentLine) {
-              currentLine = candidate;
-              return;
-            }
-
-            lines.push(currentLine);
-            currentLine = word;
-          };
-
-          for (const word of words) {
-            if (context.measureText(word).width <= boxWidth) {
-              pushWord(word);
-              continue;
-            }
-
-            for (const character of word) {
-              const candidate = currentLine ? `${currentLine}${character}` : character;
-              if (context.measureText(candidate).width <= boxWidth || !currentLine) {
-                currentLine = candidate;
-              } else {
-                lines.push(currentLine);
-                currentLine = character;
-              }
-            }
-          }
-
-          if (currentLine) {
-            lines.push(currentLine);
-          }
-
-          if (lines.length <= 2) {
-            chosenFontSize = fontSize;
-            chosenLines = lines;
-            break;
-          }
+        let finalLastWord = "";
+        if (lastWordText) {
+          context.font = `400 ${baseFontSize}px 'Prachason Neue', ${archivoFamily}`;
+          finalLastWord = fitTextWithEllipsis(context, lastWordText, boxWidth);
         }
 
-        context.fillStyle = "#FFFFFF";
+        const chosenLines = [...firstLines, ...(finalLastWord ? [finalLastWord] : [])];
+
+        context.fillStyle = "#000000";
         context.textAlign = "center";
         context.textBaseline = "middle";
-        context.font = `400 ${chosenFontSize}px ${archivoFamily}`;
 
         const totalTextHeight = chosenLines.length * baseLineHeight;
         const startY = boxTop + (boxHeight - totalTextHeight) / 2 + baseLineHeight / 2;
 
-        chosenLines.slice(0, 2).forEach((line, index) => {
+        chosenLines.slice(0, 3).forEach((line, index) => {
+          const isLastWordLine = Boolean(finalLastWord) && index === chosenLines.length - 1;
+          context.font = isLastWordLine
+            ? `400 ${baseFontSize}px 'Prachason Neue', ${archivoFamily}`
+            : `700 ${baseFontSize}px 'Prachason Neue', ${archivoFamily}`;
           context.fillText(line, boxLeft + boxWidth / 2, startY + index * baseLineHeight);
         });
       } else {
@@ -1990,63 +2040,35 @@ export default function AdminPage() {
       const boxHeight = FRONT_NAME_BOX.height * scaleY;
       const nameText = idModalAttendee.name.toUpperCase();
 
-      let chosenFontSize = baseFontSize;
-      let chosenLines = [nameText];
+      const { firstNameText, lastWordText } = splitAttendeeName(nameText);
+      context.font = `700 ${baseFontSize}px 'Prachason Neue', ${archivoFamily}`;
+      const firstLines = wrapTextLines(
+        context,
+        firstNameText,
+        boxWidth,
+        lastWordText ? 2 : 3,
+      );
 
-      for (let fontSize = Math.max(baseFontSize, 10); fontSize >= 10; fontSize -= 1) {
-        context.font = `400 ${fontSize}px ${archivoFamily}`;
-        const lines: string[] = [];
-        const words = nameText.split(/\s+/).filter(Boolean);
-        let currentLine = "";
-
-        const pushWord = (word: string) => {
-          const candidate = currentLine ? `${currentLine} ${word}` : word;
-          if (context.measureText(candidate).width <= boxWidth || !currentLine) {
-            currentLine = candidate;
-            return;
-          }
-
-          lines.push(currentLine);
-          currentLine = word;
-        };
-
-        for (const word of words) {
-          if (context.measureText(word).width <= boxWidth) {
-            pushWord(word);
-            continue;
-          }
-
-          for (const character of word) {
-            const candidate = currentLine ? `${currentLine}${character}` : character;
-            if (context.measureText(candidate).width <= boxWidth || !currentLine) {
-              currentLine = candidate;
-            } else {
-              lines.push(currentLine);
-              currentLine = character;
-            }
-          }
-        }
-
-        if (currentLine) {
-          lines.push(currentLine);
-        }
-
-        if (lines.length <= 2) {
-          chosenFontSize = fontSize;
-          chosenLines = lines;
-          break;
-        }
+      let finalLastWord = "";
+      if (lastWordText) {
+        context.font = `400 ${baseFontSize}px 'Prachason Neue', ${archivoFamily}`;
+        finalLastWord = fitTextWithEllipsis(context, lastWordText, boxWidth);
       }
 
-      context.fillStyle = "#FFFFFF";
+      const chosenLines = [...firstLines, ...(finalLastWord ? [finalLastWord] : [])];
+
+      context.fillStyle = "#000000";
       context.textAlign = "center";
       context.textBaseline = "middle";
-      context.font = `400 ${chosenFontSize}px ${archivoFamily}`;
 
       const totalTextHeight = chosenLines.length * baseLineHeight;
       const startY = boxTop + (boxHeight - totalTextHeight) / 2 + baseLineHeight / 2;
 
-      chosenLines.slice(0, 2).forEach((line, index) => {
+      chosenLines.slice(0, 3).forEach((line, index) => {
+        const isLastWordLine = Boolean(finalLastWord) && index === chosenLines.length - 1;
+        context.font = isLastWordLine
+          ? `400 ${baseFontSize}px 'Prachason Neue', ${archivoFamily}`
+          : `700 ${baseFontSize}px 'Prachason Neue', ${archivoFamily}`;
         context.fillText(line, boxLeft + boxWidth / 2, startY + index * baseLineHeight);
       });
     } else {
