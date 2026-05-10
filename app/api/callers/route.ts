@@ -32,6 +32,17 @@ type CallQueueRow = {
   updated_at: string;
 };
 
+type BulkRegistrationRow = {
+  id: string;
+  contact_name: string;
+  phone_number: string;
+  church: string;
+  ministry: string;
+  address: string;
+  local_church_pastor: string;
+  added_by_admin?: boolean;
+};
+
 const validStatuses = new Set(["confirmed", "not_attending", "follow_up_needed", "no_number"]);
 
 function getSupabaseAdmin() {
@@ -72,6 +83,7 @@ function toClientRow(row: CallQueueRow) {
     updatedAt: row.updated_at,
   };
 }
+
 export async function GET(request: Request) {
   const supabase = getSupabaseAdmin();
   if (!supabase) {
@@ -100,7 +112,55 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ attendees: (data ?? []).map((row) => ({ ...toClientRow(row as CallQueueRow), attendeeId: (row as any).id })) });
+  const queueRows = (data ?? []) as CallQueueRow[];
+  const bulkSourceIds = [...new Set(queueRows.filter((row) => row.source_type === "bulk").map((row) => row.source_id))];
+
+  let bulkContacts: Record<string, {
+    contactName: string;
+    phoneNumber: string;
+    church: string;
+    ministry: string;
+    address: string;
+    localChurchPastor: string;
+    addedByAdmin: boolean;
+  }> = {};
+
+  if (bulkSourceIds.length) {
+    const { data: bulkData, error: bulkError } = await supabase
+      .from("bulk_registrations")
+      .select("id,contact_name,phone_number,church,ministry,address,local_church_pastor,added_by_admin")
+      .in("id", bulkSourceIds);
+
+    if (bulkError) {
+      return NextResponse.json({ error: bulkError.message }, { status: 500 });
+    }
+
+    bulkContacts = ((bulkData ?? []) as BulkRegistrationRow[]).reduce((map, row) => {
+      map[row.id] = {
+        contactName: row.contact_name,
+        phoneNumber: row.phone_number,
+        church: row.church,
+        ministry: row.ministry,
+        address: row.address,
+        localChurchPastor: row.local_church_pastor,
+        addedByAdmin: Boolean(row.added_by_admin),
+      };
+      return map;
+    }, {} as Record<string, {
+      contactName: string;
+      phoneNumber: string;
+      church: string;
+      ministry: string;
+      address: string;
+      localChurchPastor: string;
+      addedByAdmin: boolean;
+    }>);
+  }
+
+  return NextResponse.json({
+    attendees: queueRows.map((row) => ({ ...toClientRow(row), attendeeId: row.id })),
+    bulkContacts,
+  });
 }
 
 export async function POST(request: Request) {
@@ -112,15 +172,70 @@ export async function POST(request: Request) {
     );
   }
 
-  let body: { action?: string; attendeeKey?: string; callerName?: string; status?: string; fullName?: string; conference?: string };
+  let body: {
+    action?: string;
+    attendeeKey?: string;
+    sourceId?: string;
+    callerName?: string;
+    status?: string;
+    fullName?: string;
+    conference?: string;
+  };
   try {
-    body = (await request.json()) as { action?: string; attendeeKey?: string; callerName?: string; status?: string; fullName?: string; conference?: string };
+    body = (await request.json()) as {
+      action?: string;
+      attendeeKey?: string;
+      sourceId?: string;
+      callerName?: string;
+      status?: string;
+      fullName?: string;
+      conference?: string;
+    };
   } catch {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
 
   const attendeeKey = String(body.attendeeKey ?? "").trim();
+  const sourceId = String(body.sourceId ?? "").trim();
   const callerName = String(body.callerName ?? "").trim();
+
+  if (body.action === "bulk_status") {
+    const status = String(body.status ?? "").trim();
+
+    if (!sourceId) {
+      return NextResponse.json({ error: "sourceId is required for bulk status updates." }, { status: 400 });
+    }
+
+    if (!validStatuses.has(status as CallStatus)) {
+      return NextResponse.json(
+        { error: "Use the three final status buttons: Confirmed, Not Attending, or Follow-Up Needed." },
+        { status: 400 },
+      );
+    }
+
+    const { data, error } = await supabase
+      .from("attendee_call_queue")
+      .update({
+        call_status: status,
+        status_set_by: callerName,
+        status_set_at: new Date().toISOString(),
+        claimed_by: null,
+        claimed_at: null,
+        call_lock_expires_at: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("source_type", "bulk")
+      .eq("source_id", sourceId)
+      .select(
+        "id,attendee_key,source_type,source_id,source_index,conference,full_name,phone_number,church,ministry,address,local_church_pastor,call_status,claimed_by,claimed_at,call_lock_expires_at,status_set_by,status_set_at,number_requested_at,number_requested_by,created_at,updated_at",
+      );
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+
+    return NextResponse.json({ updatedCount: (data ?? []).length });
+  }
 
   if (!attendeeKey) {
     return NextResponse.json({ error: "attendeeKey is required." }, { status: 400 });
@@ -163,6 +278,34 @@ export async function POST(request: Request) {
   }
 
   if (body.action === "reset") {
+    const resetTimestamp = new Date().toISOString();
+
+    if (sourceId) {
+      const { data, error } = await supabase
+        .from("attendee_call_queue")
+        .update({
+          call_status: "available",
+          claimed_by: null,
+          claimed_at: null,
+          call_lock_expires_at: null,
+          status_set_by: null,
+          status_set_at: null,
+          updated_at: resetTimestamp,
+        })
+        .eq("source_type", "bulk")
+        .eq("source_id", sourceId)
+        .eq("call_status", "confirmed")
+        .select(
+          "id,attendee_key,source_type,source_id,source_index,conference,full_name,phone_number,church,ministry,address,local_church_pastor,call_status,claimed_by,claimed_at,call_lock_expires_at,status_set_by,status_set_at,number_requested_at,number_requested_by,created_at,updated_at",
+        );
+
+      if (error) {
+        return NextResponse.json({ error: error.message }, { status: 409 });
+      }
+
+      return NextResponse.json({ updatedCount: (data ?? []).length });
+    }
+
     const { data, error } = await supabase
       .from("attendee_call_queue")
       .update({
@@ -172,7 +315,7 @@ export async function POST(request: Request) {
         call_lock_expires_at: null,
         status_set_by: null,
         status_set_at: null,
-        updated_at: new Date().toISOString(),
+        updated_at: resetTimestamp,
       })
       .eq("attendee_key", attendeeKey)
       .eq("call_status", "confirmed")
@@ -192,7 +335,6 @@ export async function POST(request: Request) {
     const fullName = String(body.fullName ?? "").trim();
     const conference = String(body.conference ?? "cebu").trim();
 
-    // Update status to no_number
     const { data, error } = await supabase
       .from("attendee_call_queue")
       .update({
@@ -211,7 +353,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message }, { status: 409 });
     }
 
-    // Also log this request in the number_requests table
     const { error: requestLogError } = await supabase.from("attendee_number_requests").insert({
       attendee_key: attendeeKey,
       conference: conference as Conference,
@@ -220,9 +361,32 @@ export async function POST(request: Request) {
       requested_at: new Date().toISOString(),
     });
 
-    // Log error but don't fail the main request
     if (requestLogError) {
       console.error("Failed to log number request:", requestLogError);
+    }
+
+    return NextResponse.json({ attendee: toClientRow(data as CallQueueRow) });
+  }
+
+  if (body.action === "cancel_call") {
+    const { data, error } = await supabase
+      .from("attendee_call_queue")
+      .update({
+        call_status: "available",
+        claimed_by: null,
+        claimed_at: null,
+        call_lock_expires_at: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("attendee_key", attendeeKey)
+      .eq("call_status", "calling")
+      .select(
+        "id,attendee_key,source_type,source_id,source_index,conference,full_name,phone_number,church,ministry,address,local_church_pastor,call_status,claimed_by,claimed_at,call_lock_expires_at,status_set_by,status_set_at,number_requested_at,number_requested_by,created_at,updated_at",
+      )
+      .single();
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
     }
 
     return NextResponse.json({ attendee: toClientRow(data as CallQueueRow) });
