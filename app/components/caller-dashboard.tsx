@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import QRCode from "qrcode";
 import { createClient as createSupabaseClient } from "../../utils/supabase/client";
 
-type CallerSlug = "cathy" | "jewel" | "geneveve";
+export type CallerSlug = "cathy" | "jewel" | "geneveve" | "queenie";
 type Conference = "cebu" | "leyte";
 type CallStatus = "available" | "calling" | "confirmed" | "not_attending" | "follow_up_needed" | "no_number";
 
@@ -38,8 +38,19 @@ type AttendeeRow = {
   updatedAt: string;
 };
 
+type BulkContactInfo = {
+  contactName: string;
+  phoneNumber: string;
+  church: string;
+  ministry: string;
+  address: string;
+  localChurchPastor: string;
+  addedByAdmin: boolean;
+};
+
 type AttendeeResponse = {
   attendees?: AttendeeRow[];
+  bulkContacts?: Record<string, BulkContactInfo>;
   error?: string;
 };
 
@@ -92,6 +103,16 @@ const statusPriority: Record<CallStatus, number> = {
   confirmed: 3,
   not_attending: 4,
 };
+
+function getStatusTone(status: CallStatus | "mixed") {
+  if (status === "confirmed") return "bg-emerald-500/15 text-emerald-200 ring-emerald-400/25";
+  if (status === "not_attending") return "bg-rose-500/15 text-rose-200 ring-rose-400/25";
+  if (status === "follow_up_needed") return "bg-amber-500/15 text-amber-100 ring-amber-400/25";
+  if (status === "calling") return "bg-sky-500/15 text-sky-100 ring-sky-400/25";
+  if (status === "no_number") return "bg-orange-500/15 text-orange-200 ring-orange-400/25";
+  if (status === "mixed") return "bg-violet-500/15 text-violet-100 ring-violet-400/30";
+  return "bg-white/8 text-slate-200 ring-white/15";
+}
 
 function buildStorageKey(slug: CallerSlug) {
   return `caller-dashboard-access:${slug}`;
@@ -195,6 +216,37 @@ function getCallerDisplayName(slug: CallerSlug) {
   return slug.charAt(0).toUpperCase() + slug.slice(1);
 }
 
+function formatBulkMemberDisplay(member: AttendeeRow, addedByAdmin: boolean) {
+  if (addedByAdmin) {
+    return member.phoneNumber || member.fullName;
+  }
+
+  return member.fullName;
+}
+
+type BulkGroupView = {
+  kind: "bulk";
+  sourceId: string;
+  conference: Conference;
+  contactName: string;
+  contactPhone: string;
+  church: string;
+  ministry: string;
+  address: string;
+  members: AttendeeRow[];
+  addedByAdmin: boolean;
+  status: CallStatus | "mixed";
+  claimedByList: string[];
+  claimedAt: string | null;
+};
+
+type TableViewRow =
+  | {
+      kind: "individual";
+      attendee: AttendeeRow;
+    }
+  | BulkGroupView;
+
 export default function CallerDashboard({ callerSlug, displayName }: CallerDashboardProps) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [password, setPassword] = useState("");
@@ -203,8 +255,11 @@ export default function CallerDashboard({ callerSlug, displayName }: CallerDashb
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [attendees, setAttendees] = useState<AttendeeRow[]>([]);
+  const [bulkContacts, setBulkContacts] = useState<Record<string, BulkContactInfo>>({});
+  const [activeCallModal, setActiveCallModal] = useState<{ attendee: AttendeeRow; bulkGroup: BulkGroupView | null } | null>(null);
   const [search, setSearch] = useState("");
   const [conferenceFilter, setConferenceFilter] = useState<"all" | Conference>("all");
+  const [churchFilter, setChurchFilter] = useState<"all" | string>("all");
   const [callFilter, setCallFilter] = useState<"all" | CallStatus>("all");
   const [busyKey, setBusyKey] = useState("");
   const [qrBusyKey, setQrBusyKey] = useState("");
@@ -252,6 +307,7 @@ export default function CallerDashboard({ callerSlug, displayName }: CallerDashb
         }
 
         setAttendees(Array.isArray(data.attendees) ? data.attendees : []);
+        setBulkContacts(data.bulkContacts ?? {});
       } catch {
         if (mounted) {
           setStatusMessage("Network error while loading attendee queue.");
@@ -310,14 +366,21 @@ export default function CallerDashboard({ callerSlug, displayName }: CallerDashb
           return false;
         }
 
+        if (churchFilter !== "all" && (row.church || "") !== churchFilter) {
+          return false;
+        }
+
         if (callFilter !== "all" && row.callStatus !== callFilter) {
           return false;
         }
 
         if (!query) return true;
 
+        const bulkContactName = row.sourceType === "bulk" ? bulkContacts[row.sourceId]?.contactName ?? "" : "";
+
         return [
           row.fullName,
+          bulkContactName,
           row.phoneNumber,
           row.church,
           row.ministry,
@@ -336,7 +399,71 @@ export default function CallerDashboard({ callerSlug, displayName }: CallerDashb
         if (priority !== 0) return priority;
         return left.fullName.localeCompare(right.fullName);
       });
-  }, [attendees, callFilter, conferenceFilter, search]);
+  }, [attendees, bulkContacts, callFilter, conferenceFilter, search]);
+
+  const tableRows = useMemo(() => {
+    const bulkMap = new Map<string, AttendeeRow[]>();
+    filteredAttendees.forEach((row) => {
+      if (row.sourceType !== "bulk") return;
+      const list = bulkMap.get(row.sourceId) ?? [];
+      list.push(row);
+      bulkMap.set(row.sourceId, list);
+    });
+
+    const rows: TableViewRow[] = [];
+    const seenBulk = new Set<string>();
+
+    filteredAttendees.forEach((row) => {
+      if (row.sourceType !== "bulk") {
+        rows.push({ kind: "individual", attendee: row });
+        return;
+      }
+
+      const contact = bulkContacts[row.sourceId];
+      if (contact?.addedByAdmin) {
+        rows.push({ kind: "individual", attendee: row });
+        return;
+      }
+
+      if (seenBulk.has(row.sourceId)) return;
+      seenBulk.add(row.sourceId);
+
+      const members = (bulkMap.get(row.sourceId) ?? []).slice().sort((a, b) => a.sourceIndex - b.sourceIndex);
+      const status = members.every((member) => member.callStatus === members[0]?.callStatus)
+        ? (members[0]?.callStatus ?? "available")
+        : members.some((member) => member.callStatus === "calling")
+          ? "calling"
+          : "mixed";
+      const claimedByList = [...new Set(members.map((member) => member.claimedBy).filter((value): value is string => Boolean(value)))];
+
+      rows.push({
+        kind: "bulk",
+        sourceId: row.sourceId,
+        conference: row.conference,
+        contactName: contact?.contactName || `Bulk Contact ${row.sourceId.slice(0, 8)}`,
+        contactPhone: contact?.phoneNumber || members.find((member) => member.phoneNumber)?.phoneNumber || "",
+        addedByAdmin: contact?.addedByAdmin ?? false,
+        church: contact?.church || row.church,
+        ministry: contact?.ministry || row.ministry,
+        address: contact?.address || row.address,
+        members,
+        status,
+        claimedByList,
+        claimedAt: members.find((member) => member.claimedAt)?.claimedAt ?? null,
+      });
+    });
+
+    return rows;
+  }, [bulkContacts, filteredAttendees]);
+
+  const churchCounts = useMemo(() => {
+    const map = new Map<string, number>();
+    attendees.forEach((row) => {
+      const name = String(row.church ?? "").trim() || "Unknown";
+      map.set(name, (map.get(name) ?? 0) + 1);
+    });
+    return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [attendees]);
 
   const summary = useMemo(() => {
     const totals = {
@@ -371,6 +498,7 @@ export default function CallerDashboard({ callerSlug, displayName }: CallerDashb
       }
 
       setAttendees(Array.isArray(data.attendees) ? data.attendees : []);
+      setBulkContacts(data.bulkContacts ?? {});
     } catch {
       setStatusMessage("Network error while refreshing attendee queue.");
     }
@@ -402,6 +530,7 @@ export default function CallerDashboard({ callerSlug, displayName }: CallerDashb
     setIsAuthenticated(false);
     setPassword("");
     setLoginError("");
+    setActiveCallModal(null);
     setStatusMessage("Logged out.");
   }
 
@@ -444,15 +573,150 @@ export default function CallerDashboard({ callerSlug, displayName }: CallerDashb
       }
 
       await loadAttendeesSilently();
-
-      const callHref = buildTelHref(row.phoneNumber);
-      if (callHref) {
-        window.location.href = callHref;
-      }
-
+      setActiveCallModal({ attendee: row, bulkGroup: null });
       setStatusMessage(`Calling ${row.fullName} as ${callerName}.`);
     } catch {
       setStatusMessage("Network error while claiming attendee.");
+    } finally {
+      setBusyKey("");
+    }
+  }
+
+  async function callBulkGroup(group: BulkGroupView) {
+    const primary = group.members.find((member) => member.phoneNumber) ?? group.members[0];
+    if (!primary) {
+      setStatusMessage("No attendees in this bulk group.");
+      return;
+    }
+
+    await callAttendee(primary);
+    setActiveCallModal({ attendee: primary, bulkGroup: group });
+  }
+
+  async function cancelCall(row: AttendeeRow) {
+    setBusyKey(row.attendeeKey);
+    setStatusMessage("");
+
+    try {
+      const response = await fetch("/api/callers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "cancel_call",
+          attendeeKey: row.attendeeKey,
+          callerName,
+        }),
+      });
+
+      const data = (await response.json()) as { error?: string };
+
+      if (!response.ok) {
+        setStatusMessage(data.error ?? "Unable to cancel call.");
+        return;
+      }
+
+      await loadAttendeesSilently();
+      setActiveCallModal(null);
+      setStatusMessage(`Call with ${row.fullName} cancelled.`);
+    } catch {
+      setStatusMessage("Network error while cancelling call.");
+    } finally {
+      setBusyKey("");
+    }
+  }
+
+  async function setBulkStatus(group: BulkGroupView, nextStatus: Exclude<CallStatus, "available" | "calling">) {
+    setBusyKey(`bulk-${group.sourceId}:${nextStatus}`);
+    setStatusMessage("");
+
+    try {
+      const response = await fetch("/api/callers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "bulk_status",
+          sourceId: group.sourceId,
+          callerName,
+          status: nextStatus,
+        }),
+      });
+
+      const data = (await response.json()) as { error?: string; updatedCount?: number };
+
+      if (!response.ok) {
+        setStatusMessage(data.error ?? "Unable to update bulk status.");
+        return;
+      }
+
+      await loadAttendeesSilently();
+      setActiveCallModal(null);
+      setStatusMessage(`${group.contactName} group marked as ${statusLabels[nextStatus]} (${data.updatedCount ?? group.members.length}).`);
+    } catch {
+      setStatusMessage("Network error while updating bulk attendee status.");
+    } finally {
+      setBusyKey("");
+    }
+  }
+
+  async function resetAttendee(row: AttendeeRow) {
+    setBusyKey(`reset-${row.attendeeKey}`);
+    setStatusMessage("");
+
+    try {
+      const response = await fetch("/api/callers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "reset",
+          attendeeKey: row.attendeeKey,
+          callerName,
+        }),
+      });
+
+      const data = (await response.json()) as { error?: string };
+
+      if (!response.ok) {
+        setStatusMessage(data.error ?? "Unable to unconfirm attendee.");
+        return;
+      }
+
+      await loadAttendeesSilently();
+      setActiveCallModal(null);
+      setStatusMessage(`${row.fullName} returned to available.`);
+    } catch {
+      setStatusMessage("Network error while unconfirming attendee.");
+    } finally {
+      setBusyKey("");
+    }
+  }
+
+  async function resetBulkGroup(group: BulkGroupView) {
+    setBusyKey(`reset-bulk-${group.sourceId}`);
+    setStatusMessage("");
+
+    try {
+      const response = await fetch("/api/callers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "reset",
+          sourceId: group.sourceId,
+          callerName,
+        }),
+      });
+
+      const data = (await response.json()) as { error?: string; updatedCount?: number };
+
+      if (!response.ok) {
+        setStatusMessage(data.error ?? "Unable to unconfirm bulk group.");
+        return;
+      }
+
+      await loadAttendeesSilently();
+      setActiveCallModal(null);
+      setStatusMessage(`${group.contactName} group returned to available (${data.updatedCount ?? group.members.length}).`);
+    } catch {
+      setStatusMessage("Network error while unconfirming bulk group.");
     } finally {
       setBusyKey("");
     }
@@ -488,6 +752,40 @@ export default function CallerDashboard({ callerSlug, displayName }: CallerDashb
       setStatusMessage(`Number requested for ${row.fullName}. Admin will be notified.`);
     } catch {
       setStatusMessage("Network error while requesting number.");
+    } finally {
+      setBusyKey("");
+    }
+  }
+
+  async function cancelPreviousCall(currentRow: AttendeeRow) {
+    setBusyKey(`cancel-${currentRow.attendeeKey}`);
+    setStatusMessage("");
+
+    try {
+      const response = await fetch("/api/callers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "cancel_call",
+          attendeeKey: currentRow.attendeeKey,
+          callerName,
+        }),
+      });
+
+      const data = (await response.json()) as { error?: string };
+
+      if (!response.ok) {
+        setStatusMessage(data.error ?? "Unable to cancel call.");
+        return;
+      }
+
+      await loadAttendeesSilently();
+      setActionRequiredModalOpen(false);
+      setActionRequiredFor(null);
+      setNextAttendeeToCall(null);
+      setStatusMessage(`Call with ${currentRow.fullName} cancelled. Back to available.`);
+    } catch {
+      setStatusMessage("Network error while cancelling call.");
     } finally {
       setBusyKey("");
     }
@@ -558,6 +856,7 @@ export default function CallerDashboard({ callerSlug, displayName }: CallerDashb
       }
 
       await loadAttendeesSilently();
+      setActiveCallModal(null);
       setStatusMessage(`${row.fullName} marked as ${statusLabels[nextStatus]}.`);
     } catch {
       setStatusMessage("Network error while updating attendee status.");
@@ -590,7 +889,7 @@ export default function CallerDashboard({ callerSlug, displayName }: CallerDashb
           Welcome {callerName}!
         </h1>
         <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-200/85 sm:text-base">
-          Manage Cebu and Leyte attendees, reserve a row before calling, and keep statuses in sync in real time across Cathy, Jewel, and Geneveve.
+          Manage Cebu and Leyte attendees, reserve a row before calling, and keep statuses in sync in real time across Cathy, Jewel, Geneveve, and Queenie.
         </p>
       </div>
 
@@ -694,27 +993,40 @@ export default function CallerDashboard({ callerSlug, displayName }: CallerDashb
             ))}
           </div>
 
-          <div className="mt-6 grid gap-3 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,0.6fr)_auto] lg:items-end">
+          <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
             <label className="block">
               <span className="text-sm font-semibold text-slate-200">Search attendee</span>
               <input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 placeholder="Search name, church, phone, caller, or status"
-                className="mt-2 w-full rounded-2xl border border-white/12 bg-white/8 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-400 focus:border-amber-300/60 focus:bg-white/12"
+                className="mt-2 w-full rounded-2xl border border-white/12 bg-white px-4 py-3 text-sm text-slate-950 outline-none placeholder:text-slate-500 focus:border-amber-300/60 focus:bg-amber-50"
               />
             </label>
-
             <label className="block">
               <span className="text-sm font-semibold text-slate-200">Conference</span>
               <select
                 value={conferenceFilter}
                 onChange={(event) => setConferenceFilter(event.target.value as "all" | Conference)}
-                className="mt-2 w-full rounded-2xl border border-white/12 bg-white/8 px-4 py-3 text-sm text-white outline-none focus:border-amber-300/60 focus:bg-white/12"
+                className="mt-2 w-full rounded-2xl border border-white/12 bg-white px-4 py-3 text-sm text-slate-950 outline-none focus:border-amber-300/60 focus:bg-amber-50"
               >
-                <option value="all" className="text-slate-900">All</option>
-                <option value="cebu" className="text-slate-900">Cebu</option>
-                <option value="leyte" className="text-slate-900">Leyte</option>
+                <option value="all">All</option>
+                <option value="cebu">Cebu</option>
+                <option value="leyte">Leyte</option>
+              </select>
+            </label>
+
+            <label className="block">
+              <span className="text-sm font-semibold text-slate-200">Church</span>
+              <select
+                value={churchFilter}
+                onChange={(event) => setChurchFilter(event.target.value as "all" | string)}
+                className="mt-2 w-full rounded-2xl border border-white/12 bg-white px-4 py-3 text-sm text-slate-950 outline-none focus:border-amber-300/60 focus:bg-amber-50"
+              >
+                <option value="all">All Churches</option>
+                {churchCounts.map(([name, count]) => (
+                  <option key={name} value={name}>{`${name} (${count})`}</option>
+                ))}
               </select>
             </label>
 
@@ -723,15 +1035,15 @@ export default function CallerDashboard({ callerSlug, displayName }: CallerDashb
               <select
                 value={callFilter}
                 onChange={(event) => setCallFilter(event.target.value as "all" | CallStatus)}
-                className="mt-2 w-full rounded-2xl border border-white/12 bg-white/8 px-4 py-3 text-sm text-white outline-none focus:border-amber-300/60 focus:bg-white/12"
+                className="mt-2 w-full rounded-2xl border border-white/12 bg-white px-4 py-3 text-sm text-slate-950 outline-none focus:border-amber-300/60 focus:bg-amber-50"
               >
-                <option value="all" className="text-slate-900">All statuses</option>
-                <option value="available" className="text-slate-900">Available</option>
-                <option value="calling" className="text-slate-900">On Call</option>
-                <option value="no_number" className="text-slate-900">No Number</option>
-                <option value="confirmed" className="text-slate-900">Confirmed</option>
-                <option value="not_attending" className="text-slate-900">Not Attending</option>
-                <option value="follow_up_needed" className="text-slate-900">Follow-Up Needed</option>
+                <option value="all">All statuses</option>
+                <option value="available">Available</option>
+                <option value="calling">On Call</option>
+                <option value="no_number">No Number</option>
+                <option value="confirmed">Confirmed</option>
+                <option value="not_attending">Not Attending</option>
+                <option value="follow_up_needed">Follow-Up Needed</option>
               </select>
             </label>
           </div>
@@ -763,92 +1075,164 @@ export default function CallerDashboard({ callerSlug, displayName }: CallerDashb
                 </tr>
               </thead>
               <tbody>
-                {filteredAttendees.length ? filteredAttendees.map((row) => {
-                  const lockedByOther = isLockActive(row) && row.claimedBy !== callerName;
-                  const callHref = buildTelHref(row.phoneNumber);
+                {tableRows.length ? tableRows.map((item) => {
+                  if (item.kind === "individual") {
+                    const row = item.attendee;
+                    const lockedByOther = isLockActive(row) && row.claimedBy !== callerName;
+                    const callHref = buildTelHref(row.phoneNumber);
+
+                    return (
+                      <tr key={row.attendeeKey} className="group border-b border-white/8 text-sm text-slate-100 transition hover:bg-white/5">
+                        <td className="sticky left-0 z-10 border-b border-white/8 bg-slate-950/90 px-5 py-4 align-top">
+                          <div className="font-semibold text-white">{row.fullName}</div>
+                          <div className="mt-1 text-xs text-slate-300">{row.ministry || "-"}</div>
+                          <div className="mt-1 text-xs text-slate-400">{row.address || "-"}</div>
+                        </td>
+                        <td className="border-b border-white/8 px-5 py-4 align-top text-slate-200">{conferenceLabels[row.conference]}</td>
+                        <td className="border-b border-white/8 px-5 py-4 align-top text-slate-200">{row.phoneNumber || "-"}</td>
+                        <td className="border-b border-white/8 px-5 py-4 align-top text-slate-200">{row.church || "-"}</td>
+                        <td className="border-b border-white/8 px-5 py-4 align-top">
+                          <div className={`inline-flex rounded-full px-3 py-1 text-xs font-bold uppercase tracking-[0.16em] ring-1 ${getStatusTone(row.callStatus)}`}>
+                            {statusLabels[row.callStatus]}
+                          </div>
+                          <div className="mt-2 text-xs text-slate-400">
+                            {row.claimedBy ? `Called by ${row.claimedBy}` : "Not claimed yet"}
+                          </div>
+                          <div className="mt-1 text-xs text-slate-500">Updated: {formatDate(row.statusSetAt ?? row.updatedAt)}</div>
+                        </td>
+                        <td className="border-b border-white/8 px-5 py-4 align-top text-slate-200">
+                          <div className="font-semibold text-white">{row.claimedBy ?? "-"}</div>
+                          <div className="mt-1 text-xs text-slate-400">{row.claimedAt ? formatDate(row.claimedAt) : "-"}</div>
+                        </td>
+                        <td className="border-b border-white/8 px-5 py-4 align-top">
+                          <button
+                            type="button"
+                            onClick={() => void openQrPreview(row)}
+                            disabled={qrBusyKey === row.attendeeKey}
+                            className="rounded-full border border-amber-300/25 bg-amber-300/10 px-3 py-2 text-xs font-bold uppercase tracking-[0.18em] text-amber-100 transition hover:bg-amber-300/15 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {qrBusyKey === row.attendeeKey ? "Building..." : "QR"}
+                          </button>
+                        </td>
+                        <td className="border-b border-white/8 px-5 py-4 align-top">
+                          <div className="flex flex-col items-end gap-2">
+                            {row.callStatus === "confirmed" ? (
+                              <button
+                                type="button"
+                                onClick={() => void resetAttendee(row)}
+                                disabled={busyKey === `reset-${row.attendeeKey}`}
+                                className="inline-flex items-center justify-center rounded-full border border-white/10 bg-white/8 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-slate-100 transition hover:bg-white/12 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {busyKey === `reset-${row.attendeeKey}` ? "Unconfirming..." : "Unconfirm"}
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => void callAttendee(row)}
+                                disabled={!callHref || lockedByOther || busyKey === row.attendeeKey || row.callStatus === "not_attending"}
+                                className="inline-flex items-center justify-center rounded-full bg-gradient-to-r from-amber-300 to-orange-400 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-slate-950 transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {busyKey === row.attendeeKey ? "Calling..." : lockedByOther ? `Locked by ${row.claimedBy}` : "Call"}
+                              </button>
+                            )}
+
+                            <div className="flex flex-wrap justify-end gap-2">
+                              {statusOptions.map((option) => (
+                                <button
+                                  key={option.value}
+                                  type="button"
+                                  onClick={() => void setCallStatus(row, option.value)}
+                                  disabled={busyKey === `${row.attendeeKey}:${option.value}` || lockedByOther || row.callStatus === option.value || row.callStatus === "confirmed" || row.callStatus === "not_attending"}
+                                  className={`rounded-full border px-3 py-2 text-[11px] font-bold uppercase tracking-[0.16em] transition disabled:cursor-not-allowed disabled:opacity-60 ${option.tone}`}
+                                >
+                                  {busyKey === `${row.attendeeKey}:${option.value}` ? "Saving..." : option.label}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  }
+
+                  const group = item;
+                  const hasAnyPhone = Boolean(group.contactPhone || group.members.some((member) => member.phoneNumber));
+                  const done = group.status === "confirmed" || group.status === "not_attending";
 
                   return (
-                    <tr key={row.attendeeKey} className="group border-b border-white/8 text-sm text-slate-100 transition hover:bg-white/5">
+                    <tr key={`bulk-${group.sourceId}`} className="group border-b border-white/8 text-sm text-slate-100 transition hover:bg-white/5">
                       <td className="sticky left-0 z-10 border-b border-white/8 bg-slate-950/90 px-5 py-4 align-top">
-                        <div className="font-semibold text-white">{row.fullName}</div>
-                        <div className="mt-1 text-xs text-slate-300">{row.ministry || "-"}</div>
-                        <div className="mt-1 text-xs text-slate-400">{row.address || "-"}</div>
+                        <div className="inline-flex rounded-full border border-cyan-300/25 bg-cyan-300/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-100">
+                          Bulk Group
+                        </div>
+                        <div className="mt-2 font-semibold text-white">Contact: {group.contactName}</div>
+                        <div className="mt-1 text-xs text-slate-300">{group.ministry || "-"}</div>
+                        <div className="mt-1 text-xs text-slate-400">{group.address || "-"}</div>
+                        <details className="mt-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200">
+                          <summary className="cursor-pointer font-semibold uppercase tracking-[0.14em] text-amber-200/80">
+                            {group.addedByAdmin ? `Attendee Numbers (${group.members.length})` : `Attendees Registered (${group.members.length})`}
+                          </summary>
+                          <div className="mt-2 max-h-40 overflow-y-auto pr-1 text-slate-200">
+                            <ul className="space-y-1 pl-4">
+                              {group.members.map((member) => (
+                                <li key={member.attendeeKey} className="list-disc">{formatBulkMemberDisplay(member, group.addedByAdmin)}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        </details>
                       </td>
-                      <td className="border-b border-white/8 px-5 py-4 align-top text-slate-200">{conferenceLabels[row.conference]}</td>
-                      <td className="border-b border-white/8 px-5 py-4 align-top text-slate-200">{row.phoneNumber || "-"}</td>
-                      <td className="border-b border-white/8 px-5 py-4 align-top text-slate-200">{row.church || "-"}</td>
+                      <td className="border-b border-white/8 px-5 py-4 align-top text-slate-200">{conferenceLabels[group.conference]}</td>
+                      <td className="border-b border-white/8 px-5 py-4 align-top text-slate-200">{group.contactPhone || "-"}</td>
+                      <td className="border-b border-white/8 px-5 py-4 align-top text-slate-200">{group.church || "-"}</td>
                       <td className="border-b border-white/8 px-5 py-4 align-top">
-                        <div className={`inline-flex rounded-full px-3 py-1 text-xs font-bold uppercase tracking-[0.16em] ring-1 ${
-                          row.callStatus === "confirmed"
-                            ? "bg-emerald-500/15 text-emerald-200 ring-emerald-400/25"
-                            : row.callStatus === "not_attending"
-                              ? "bg-rose-500/15 text-rose-200 ring-rose-400/25"
-                              : row.callStatus === "follow_up_needed"
-                                ? "bg-amber-500/15 text-amber-100 ring-amber-400/25"
-                                : row.callStatus === "calling"
-                                  ? "bg-sky-500/15 text-sky-100 ring-sky-400/25"
-                                  : row.callStatus === "no_number"
-                                    ? "bg-orange-500/15 text-orange-200 ring-orange-400/25"
-                                    : "bg-white/8 text-slate-200 ring-white/15"
-                        }`}>
-                          {statusLabels[row.callStatus]}
+                        <div className={`inline-flex rounded-full px-3 py-1 text-xs font-bold uppercase tracking-[0.16em] ring-1 ${getStatusTone(group.status)}`}>
+                          {group.status === "mixed" ? "Mixed" : statusLabels[group.status]}
                         </div>
                         <div className="mt-2 text-xs text-slate-400">
-                          {row.claimedBy ? `Called by ${row.claimedBy}` : "Not claimed yet"}
+                          {group.claimedByList.length ? `Called by ${group.claimedByList.join(", ")}` : "Not claimed yet"}
                         </div>
-                        <div className="mt-1 text-xs text-slate-500">Updated: {formatDate(row.statusSetAt ?? row.updatedAt)}</div>
+                        <div className="mt-1 text-xs text-slate-500">Updated: {formatDate(group.members[0]?.statusSetAt ?? group.members[0]?.updatedAt ?? null)}</div>
                       </td>
                       <td className="border-b border-white/8 px-5 py-4 align-top text-slate-200">
-                        <div className="font-semibold text-white">{row.claimedBy ?? "-"}</div>
-                        <div className="mt-1 text-xs text-slate-400">{row.claimedAt ? formatDate(row.claimedAt) : "-"}</div>
+                        <div className="font-semibold text-white">{group.claimedByList.length ? group.claimedByList.join(", ") : "-"}</div>
+                        <div className="mt-1 text-xs text-slate-400">{group.claimedAt ? formatDate(group.claimedAt) : "-"}</div>
                       </td>
-                      <td className="border-b border-white/8 px-5 py-4 align-top">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void (async () => {
-                              setQrBusyKey(row.attendeeKey);
-                              try {
-                                const idForQr = row.attendeeId ?? row.attendeeKey;
-                                const dataUrl = await buildQrWebp(idForQr, row.fullName);
-                                setQrPreview({ fullName: row.fullName, dataUrl });
-                              } catch {
-                                setStatusMessage("Unable to generate QR code.");
-                              } finally {
-                                setQrBusyKey("");
-                              }
-                            })();
-                          }}
-                          disabled={qrBusyKey === row.attendeeKey}
-                          className="rounded-full border border-amber-300/25 bg-amber-300/10 px-3 py-2 text-xs font-bold uppercase tracking-[0.18em] text-amber-100 transition hover:bg-amber-300/15 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {qrBusyKey === row.attendeeKey ? "Building..." : "QR"}
-                        </button>
-                      </td>
+                      <td className="border-b border-white/8 px-5 py-4 align-top text-slate-400">-</td>
                       <td className="border-b border-white/8 px-5 py-4 align-top">
                         <div className="flex flex-col items-end gap-2">
                           <button
                             type="button"
-                            onClick={() => void callAttendee(row)}
-                            disabled={!callHref || lockedByOther || busyKey === row.attendeeKey || row.callStatus === "confirmed" || row.callStatus === "not_attending"}
+                            onClick={() => void callBulkGroup(group)}
+                            disabled={!hasAnyPhone || done}
                             className="inline-flex items-center justify-center rounded-full bg-gradient-to-r from-amber-300 to-orange-400 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-slate-950 transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
                           >
-                            {busyKey === row.attendeeKey ? "Calling..." : lockedByOther ? `Locked by ${row.claimedBy}` : "Call"}
+                            Call Contact
                           </button>
 
                           <div className="flex flex-wrap justify-end gap-2">
                             {statusOptions.map((option) => (
                               <button
-                                key={option.value}
+                                key={`${group.sourceId}:${option.value}`}
                                 type="button"
-                                onClick={() => void setCallStatus(row, option.value)}
-                                disabled={busyKey === `${row.attendeeKey}:${option.value}` || lockedByOther || row.callStatus === option.value || row.callStatus === "confirmed" || row.callStatus === "not_attending"}
+                                onClick={() => void setBulkStatus(group, option.value)}
+                                disabled={busyKey === `bulk-${group.sourceId}:${option.value}` || group.status === option.value || done}
                                 className={`rounded-full border px-3 py-2 text-[11px] font-bold uppercase tracking-[0.16em] transition disabled:cursor-not-allowed disabled:opacity-60 ${option.tone}`}
                               >
-                                {busyKey === `${row.attendeeKey}:${option.value}` ? "Saving..." : option.label}
+                                {busyKey === `bulk-${group.sourceId}:${option.value}` ? "Saving..." : `${option.label} All`}
                               </button>
                             ))}
                           </div>
+
+                          {group.status === "confirmed" ? (
+                            <button
+                              type="button"
+                              onClick={() => void resetBulkGroup(group)}
+                              disabled={busyKey === `reset-bulk-${group.sourceId}` || done}
+                              className="inline-flex items-center justify-center rounded-full border border-white/10 bg-white/8 px-4 py-2 text-xs font-bold uppercase tracking-[0.18em] text-slate-100 transition hover:bg-white/12 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {busyKey === `reset-bulk-${group.sourceId}` ? "Unconfirming..." : "Unconfirm All"}
+                            </button>
+                          ) : null}
                         </div>
                       </td>
                     </tr>
@@ -865,6 +1249,132 @@ export default function CallerDashboard({ callerSlug, displayName }: CallerDashb
           </div>
         </section>
       </div>
+
+      {activeCallModal ? (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/70 px-4 py-4 backdrop-blur-sm sm:items-center sm:py-8">
+          <div className="w-full max-w-lg rounded-[2rem] border border-white/10 bg-slate-950 p-5 shadow-[0_24px_80px_rgba(0,0,0,0.55)] sm:p-6">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-sky-200/85">Live Call Details</p>
+                <h2 className="mt-2 text-2xl font-black text-white">
+                  {activeCallModal.bulkGroup ? activeCallModal.bulkGroup.contactName : activeCallModal.attendee.fullName}
+                </h2>
+                <p className="mt-2 text-sm text-slate-300">
+                  {activeCallModal.bulkGroup
+                    ? `Bulk contact call in progress for ${activeCallModal.bulkGroup.members.length} attendees.`
+                    : "Individual attendee call in progress."}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveCallModal(null)}
+                className="rounded-full border border-white/10 bg-white/8 px-3 py-1.5 text-sm font-semibold text-slate-200 transition hover:bg-white/12"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-200">
+              <p><span className="font-semibold text-slate-100">Phone:</span> {activeCallModal.bulkGroup?.contactPhone || activeCallModal.attendee.phoneNumber || "-"}</p>
+              <p className="mt-1"><span className="font-semibold text-slate-100">Church:</span> {activeCallModal.bulkGroup?.church || activeCallModal.attendee.church || "-"}</p>
+              <p className="mt-1"><span className="font-semibold text-slate-100">Address:</span> {activeCallModal.bulkGroup?.address || activeCallModal.attendee.address || "-"}</p>
+              {activeCallModal.bulkGroup ? (
+                <details className="mt-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200">
+                  <summary className="cursor-pointer font-semibold uppercase tracking-[0.14em] text-amber-200/80">
+                    {activeCallModal.bulkGroup.addedByAdmin
+                      ? `Attendee Numbers (${activeCallModal.bulkGroup.members.length})`
+                      : `Attendees Registered (${activeCallModal.bulkGroup.members.length})`}
+                  </summary>
+                  <div className="mt-2 max-h-48 overflow-y-auto pr-1 leading-6 text-slate-300">
+                    <ul className="space-y-1 pl-4">
+                      {activeCallModal.bulkGroup!.members.map((member) => (
+                        <li key={member.attendeeKey} className="list-disc">{formatBulkMemberDisplay(member, activeCallModal.bulkGroup!.addedByAdmin)}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </details>
+              ) : null}
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              {buildTelHref(activeCallModal.bulkGroup?.contactPhone || activeCallModal.attendee.phoneNumber) ? (
+                <a
+                  href={buildTelHref(activeCallModal.bulkGroup?.contactPhone || activeCallModal.attendee.phoneNumber)}
+                  className="inline-flex items-center justify-center rounded-full bg-sky-500/20 border border-sky-300/30 px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-sky-100"
+                >
+                  Open Dialer
+                </a>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => void cancelCall(activeCallModal.attendee)}
+                disabled={busyKey === activeCallModal.attendee.attendeeKey}
+                className="inline-flex items-center justify-center rounded-full bg-slate-500/15 border border-slate-400/25 px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-slate-200 disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {busyKey === activeCallModal.attendee.attendeeKey ? "Cancelling..." : "Cancel Call"}
+              </button>
+              {activeCallModal.bulkGroup ? (
+                <button
+                  type="button"
+                  onClick={() => void resetBulkGroup(activeCallModal.bulkGroup!)}
+                  disabled={busyKey === `reset-bulk-${activeCallModal.bulkGroup.sourceId}`}
+                  className="inline-flex items-center justify-center rounded-full border border-white/10 bg-white/8 px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {busyKey === `reset-bulk-${activeCallModal.bulkGroup.sourceId}` ? "Unconfirming..." : "Unconfirm All"}
+                </button>
+              ) : activeCallModal.attendee.callStatus === "confirmed" ? (
+                <button
+                  type="button"
+                  onClick={() => void resetAttendee(activeCallModal.attendee)}
+                  disabled={busyKey === `reset-${activeCallModal.attendee.attendeeKey}`}
+                  className="inline-flex items-center justify-center rounded-full border border-white/10 bg-white/8 px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {busyKey === `reset-${activeCallModal.attendee.attendeeKey}` ? "Unconfirming..." : "Unconfirm"}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => {
+                  if (activeCallModal.bulkGroup) {
+                    void setBulkStatus(activeCallModal.bulkGroup, "confirmed");
+                    return;
+                  }
+                  void setCallStatus(activeCallModal.attendee, "confirmed");
+                }}
+                className="inline-flex items-center justify-center rounded-full bg-emerald-500/15 border border-emerald-400/25 px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-emerald-200"
+              >
+                {activeCallModal.bulkGroup ? "Confirm All" : "Confirmed"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (activeCallModal.bulkGroup) {
+                    void setBulkStatus(activeCallModal.bulkGroup, "not_attending");
+                    return;
+                  }
+                  void setCallStatus(activeCallModal.attendee, "not_attending");
+                }}
+                className="inline-flex items-center justify-center rounded-full bg-rose-500/15 border border-rose-400/25 px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-rose-200"
+              >
+                {activeCallModal.bulkGroup ? "Not Attending All" : "Not Attending"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (activeCallModal.bulkGroup) {
+                    void setBulkStatus(activeCallModal.bulkGroup, "follow_up_needed");
+                    return;
+                  }
+                  void setCallStatus(activeCallModal.attendee, "follow_up_needed");
+                }}
+                className="inline-flex items-center justify-center rounded-full bg-amber-500/15 border border-amber-400/25 px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-amber-200"
+              >
+                {activeCallModal.bulkGroup ? "Follow-Up All" : "Follow-Up"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {qrPreview ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 px-4 py-8 backdrop-blur-sm">
@@ -912,7 +1422,7 @@ export default function CallerDashboard({ callerSlug, displayName }: CallerDashb
           <div className="w-full max-w-md rounded-[2rem] border border-white/10 bg-slate-950 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.25em] text-orange-200/80">⚠️ Attendee No Number</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.25em] text-orange-200/80">Attendee No Number</p>
                 <h2 className="mt-2 text-2xl font-black text-white">{noNumberModalFor.fullName}</h2>
                 <p className="mt-3 text-sm text-slate-300">This attendee does not have a phone number on file. Request the admin to add one so you can make the call.</p>
               </div>
@@ -957,7 +1467,7 @@ export default function CallerDashboard({ callerSlug, displayName }: CallerDashb
           <div className="w-full max-w-md rounded-[2rem] border border-white/10 bg-slate-950 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.25em] text-sky-200/80">⏸️ Action Required</p>
+                <p className="text-xs font-semibold uppercase tracking-[0.25em] text-sky-200/80">Action Required</p>
                 <h2 className="mt-2 text-xl font-black text-white">You have not yet taken an action on:</h2>
                 <p className="mt-3 text-base font-bold text-amber-200">{actionRequiredFor.fullName}</p>
                 <p className="mt-2 text-sm text-slate-300">Please complete their call status before calling {nextAttendeeToCall.fullName}.</p>
@@ -980,38 +1490,35 @@ export default function CallerDashboard({ callerSlug, displayName }: CallerDashb
                 <button
                   type="button"
                   onClick={() => void completeActionAndCall(actionRequiredFor, "confirmed", nextAttendeeToCall)}
-                  disabled={busyKey.startsWith("complete-")}
+                  disabled={busyKey.startsWith("complete-") || busyKey.startsWith("cancel-")}
                   className="inline-flex items-center justify-center rounded-full bg-emerald-500/15 border border-emerald-400/25 px-4 py-2.5 text-sm font-bold uppercase tracking-[0.16em] text-emerald-200 transition hover:bg-emerald-500/25 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {busyKey === `complete-${actionRequiredFor.attendeeKey}` ? "Saving..." : "✓ Confirmed"}
+                  {busyKey === `complete-${actionRequiredFor.attendeeKey}` ? "Saving..." : "Confirmed"}
                 </button>
                 <button
                   type="button"
                   onClick={() => void completeActionAndCall(actionRequiredFor, "not_attending", nextAttendeeToCall)}
-                  disabled={busyKey.startsWith("complete-")}
+                  disabled={busyKey.startsWith("complete-") || busyKey.startsWith("cancel-")}
                   className="inline-flex items-center justify-center rounded-full bg-rose-500/15 border border-rose-400/25 px-4 py-2.5 text-sm font-bold uppercase tracking-[0.16em] text-rose-200 transition hover:bg-rose-500/25 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {busyKey === `complete-${actionRequiredFor.attendeeKey}` ? "Saving..." : "✗ Not Attending"}
+                  {busyKey === `complete-${actionRequiredFor.attendeeKey}` ? "Saving..." : "Not Attending"}
                 </button>
                 <button
                   type="button"
                   onClick={() => void completeActionAndCall(actionRequiredFor, "follow_up_needed", nextAttendeeToCall)}
-                  disabled={busyKey.startsWith("complete-")}
+                  disabled={busyKey.startsWith("complete-") || busyKey.startsWith("cancel-")}
                   className="inline-flex items-center justify-center rounded-full bg-amber-500/15 border border-amber-400/25 px-4 py-2.5 text-sm font-bold uppercase tracking-[0.16em] text-amber-200 transition hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {busyKey === `complete-${actionRequiredFor.attendeeKey}` ? "Saving..." : "⟳ Follow-Up Needed"}
+                  {busyKey === `complete-${actionRequiredFor.attendeeKey}` ? "Saving..." : "Follow-Up Needed"}
                 </button>
               </div>
               <button
                 type="button"
-                onClick={() => {
-                  setActionRequiredModalOpen(false);
-                  setActionRequiredFor(null);
-                  setNextAttendeeToCall(null);
-                }}
-                className="w-full inline-flex items-center justify-center rounded-full border border-white/10 bg-white/8 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-white/12"
+                onClick={() => void cancelPreviousCall(actionRequiredFor)}
+                disabled={busyKey.startsWith("cancel-") || busyKey.startsWith("complete-")}
+                className="w-full inline-flex items-center justify-center rounded-full border border-white/10 bg-white/8 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-white/12 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Cancel
+                {busyKey === `cancel-${actionRequiredFor.attendeeKey}` ? "Cancelling..." : "Cancel Call"}
               </button>
             </div>
           </div>

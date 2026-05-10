@@ -511,6 +511,7 @@ export default function QRReaderPage() {
             <video
               ref={videoRef}
               className="w-full h-[360px] sm:h-[420px] md:h-[520px] lg:h-[620px] rounded-[1.2rem] bg-black object-cover"
+              style={{ transform: "scaleX(-1)" }}
               playsInline
               muted
             />
