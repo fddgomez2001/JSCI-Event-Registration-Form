@@ -409,9 +409,22 @@ async function loadImage(src: string) {
   });
 }
 
-function getIdNameTypography(_name: string) {
-  // Enforce fixed typography per design: 22px font, 94% line-height
-  return { fontSize: 22, lineHeight: 20.68 };
+function getIdNameTypography(name: string) {
+  // Dynamically adjust font size based on name length
+  // Longer names get smaller font to fit in the box
+  const nameLength = (name ?? "").length;
+  let fontSize = 22;
+  
+  if (nameLength > 35) {
+    fontSize = 14;
+  } else if (nameLength > 28) {
+    fontSize = 16;
+  } else if (nameLength > 20) {
+    fontSize = 18;
+  }
+  
+  const lineHeight = fontSize * 0.94;
+  return { fontSize, lineHeight };
 }
 
 function splitAttendeeName(name: string) {
@@ -421,6 +434,29 @@ function splitAttendeeName(name: string) {
   return {
     firstNameText: words.slice(0, -1).join(" "),
     lastWordText: words[words.length - 1],
+  };
+}
+
+function splitAttendeeNameWithJr(name: string) {
+  const words = String(name ?? "").trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return { boldText: "", lightText: "" };
+  
+  const lastWord = words[words.length - 1];
+  const isJr = lastWord === "JR." || lastWord === "JR" || lastWord === "Jr." || lastWord === "Jr";
+  
+  if (isJr && words.length >= 2) {
+    // Last two words should be light (the word before Jr and Jr itself)
+    return {
+      boldText: words.slice(0, -2).join(" "),
+      lightText: words.slice(-2).join(" ")
+    };
+  }
+  
+  // Default behavior (no Jr.)
+  if (words.length === 1) return { boldText: words[0], lightText: "" };
+  return {
+    boldText: words.slice(0, -1).join(" "),
+    lightText: words[words.length - 1]
   };
 }
 
@@ -552,6 +588,11 @@ export default function AdminPage() {
       {} as Record<keyof ExportRow, boolean>,
     ),
   );
+
+  const [callerLogsExportModalOpen, setCallerLogsExportModalOpen] = useState(false);
+  const [callerLogsExportCaller, setCallerLogsExportCaller] = useState<"all" | string>("all");
+  const [callerLogsExportStatus, setCallerLogsExportStatus] = useState<"all" | "confirmed">("all");
+  const [isExportingCallerLogs, setIsExportingCallerLogs] = useState(false);
 
   const [deletingRow, setDeletingRow] = useState<AdminRecord | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -1214,6 +1255,125 @@ export default function AdminPage() {
     }
   }
 
+  async function setCallerLogRowStatus(
+    row: CallerLogRow,
+    nextStatus: "confirmed" | "not_attending",
+  ) {
+    setCallerActionKey(row.attendeeKey);
+    setStatus("");
+
+    try {
+      const response = await fetch("/api/callers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "admin_status",
+          attendeeKey: row.attendeeKey,
+          callerName: username || "Admin",
+          status: nextStatus,
+        }),
+      });
+
+      const data = (await response.json()) as { error?: string };
+
+      if (!response.ok) {
+        setStatus(data.error ?? "Unable to update caller row status.");
+        return;
+      }
+
+      const ok = await loadAdminData(username, ADMIN_PASSWORD, selectedConference);
+      if (ok) {
+        setStatus(`${row.fullName} marked as ${nextStatus === "confirmed" ? "Confirmed" : "Not Attending"}.`);
+      }
+    } catch {
+      setStatus("Network error while updating caller row status.");
+    } finally {
+      setCallerActionKey("");
+    }
+  }
+
+  async function exportCallerLogs() {
+    if (callerLogsExportModalOpen) {
+      setCallerLogsExportModalOpen(false);
+    }
+
+    setIsExportingCallerLogs(true);
+    setStatus("");
+
+    try {
+      let rowsToExport = filteredCallerLogRows;
+
+      // Filter by caller if specified
+      if (callerLogsExportCaller !== "all") {
+        rowsToExport = rowsToExport.filter(
+          (row) => row.claimedBy === callerLogsExportCaller || row.statusSetBy === callerLogsExportCaller,
+        );
+      }
+
+      // Filter by status if confirmed only
+      if (callerLogsExportStatus === "confirmed") {
+        rowsToExport = rowsToExport.filter((row) => row.callStatus === "confirmed");
+      }
+
+      if (!rowsToExport.length) {
+        setStatus("No records match the export criteria.");
+        setIsExportingCallerLogs(false);
+        return;
+      }
+
+      // Prepare CSV data
+      const headers = [
+        "Attendee Name",
+        "Phone",
+        "Church",
+        "Ministry",
+        "Conference",
+        "Status",
+        "Claimed By",
+        "Claimed At",
+        "Status Set By",
+        "Status Set At",
+        "Updated At",
+      ];
+
+      const csvContent = [
+        headers.join(","),
+        ...rowsToExport.map((row) =>
+          [
+            `"${row.fullName.replace(/"/g, '""')}"`,
+            `"${row.phoneNumber || ""}"`,
+            `"${row.church || ""}"`,
+            `"${row.ministry || ""}"`,
+            row.conference,
+            row.callStatus.toUpperCase().replace(/_/g, " "),
+            `"${row.claimedBy || ""}"`,
+            `"${formatDate(row.claimedAt ?? "")}"`,
+            `"${row.statusSetBy || ""}"`,
+            `"${formatDate(row.statusSetAt ?? "")}"`,
+            `"${formatDate(row.updatedAt)}"`,
+          ].join(","),
+        ),
+      ].join("\n");
+
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const link = document.createElement("a");
+      const url = URL.createObjectURL(blob);
+      link.setAttribute("href", url);
+      link.setAttribute(
+        "download",
+        `caller-logs-${selectedConference}-${new Date().toISOString().split("T")[0]}.csv`,
+      );
+      link.click();
+      URL.revokeObjectURL(url);
+
+      setStatus(`Caller logs exported successfully (${rowsToExport.length} records).`);
+    } catch {
+      setStatus("Unable to export caller logs.");
+    } finally {
+      setIsExportingCallerLogs(false);
+    }
+  }
+
   function toggleRowSelection(key: string) {
     setSelectedRowKeys((current) =>
       current.includes(key)
@@ -1735,19 +1895,18 @@ export default function AdminPage() {
           .finally(() => setIsGeneratingPreview(false));
       }
 
-      const typography = getIdNameTypography(idModalAttendee.name);
-      const fontSize = typography.fontSize * scale;
-      const lineHeight = typography.lineHeight * scale;
+      const fontSize = 22 * scale;
+      const lineHeight = 22 * 0.94 * scale;
       const upperName = idModalAttendee.name.toUpperCase();
-      const { firstNameText, lastWordText } = splitAttendeeName(upperName);
+      const { boldText, lightText } = splitAttendeeNameWithJr(upperName);
 
       return (
         <div
-          className={`relative shrink-0 overflow-hidden ${archivoBlack.className}`}
+          className={`relative shrink-0 overflow-visible ${archivoBlack.className}`}
           style={{
             width: `${ID_BASE_WIDTH * scale}px`,
             height: `${ID_BASE_HEIGHT * scale}px`,
-            backgroundImage: 'url("/FRONT ID.png")',
+            backgroundImage: 'url("/For%20Automation%20_002.png")',
             backgroundRepeat: "no-repeat",
             backgroundPosition: "center",
             backgroundSize: "100% 100%",
@@ -1775,17 +1934,19 @@ export default function AdminPage() {
               whiteSpace: "normal",
               wordBreak: "break-word",
               overflowWrap: "anywhere",
-              overflow: "hidden",
+              overflow: "visible",
             }}
           >
-            <span style={{ display: "inline-block", padding: "0 4px", fontWeight: 700 }}>
-              {firstNameText}
-            </span>
-            {lastWordText ? (
-              <span style={{ display: "inline-block", padding: "0 4px", fontWeight: 400 }}>
-                {lastWordText}
+            {boldText && (
+              <span style={{ display: "inline-block", padding: "0 4px", fontWeight: 700 }}>
+                {boldText}
               </span>
-            ) : null}
+            )}
+            {lightText && (
+              <span style={{ display: "inline-block", padding: "0 4px", fontWeight: 400 }}>
+                {lightText}
+              </span>
+            )}
           </div>
         </div>
       );
@@ -1804,7 +1965,7 @@ export default function AdminPage() {
           height: `${ID_BASE_HEIGHT}px`,
           left: "666px",
           top: "300px",
-          backgroundImage: 'url("/FRONT ID.png")',
+          backgroundImage: 'url("/For%20Automation%20_002.png")',
           backgroundRepeat: "no-repeat",
           backgroundPosition: "center",
           backgroundSize: "100% 100%",
@@ -1919,51 +2080,45 @@ export default function AdminPage() {
 
       const scaleX = canvas.width / ID_BASE_WIDTH;
       const scaleY = canvas.height / ID_BASE_HEIGHT;
-      const templateImage = await loadImage(side === "front" ? "/FRONT%20ID.png" : "/BACK%20ID.png");
+      const templateImage = await loadImage(side === "front" ? "/For%20Automation%20_002.png" : "/BACK%20ID.png");
 
       context.drawImage(templateImage, 0, 0, canvas.width, canvas.height);
 
       if (side === "front") {
-        const typography = getIdNameTypography(idModalAttendee.name.toUpperCase());
-        const sizeScale = Math.min(scaleX, scaleY);
-        const baseFontSize = typography.fontSize * sizeScale;
-        const baseLineHeight = typography.lineHeight * sizeScale;
+        let sizeScale = Math.min(scaleX, scaleY);
+        let baseFontSize = 22 * sizeScale;
+        let baseLineHeight = baseFontSize * 0.94;
         const boxLeft = FRONT_NAME_BOX.left * scaleX;
         const boxTop = FRONT_NAME_BOX.top * scaleY;
         const boxWidth = FRONT_NAME_BOX.width * scaleX;
         const boxHeight = FRONT_NAME_BOX.height * scaleY;
         const nameText = idModalAttendee.name.toUpperCase();
 
-        const { firstNameText, lastWordText } = splitAttendeeName(nameText);
-        context.font = `700 ${baseFontSize}px 'Prachason Neue', ${archivoFamily}`;
-        const firstLines = wrapTextLines(
-          context,
-          firstNameText,
-          boxWidth,
-          lastWordText ? 2 : 3,
-        );
+        const { boldText, lightText } = splitAttendeeNameWithJr(nameText);
 
-        let finalLastWord = "";
-        if (lastWordText) {
-          context.font = `400 ${baseFontSize}px 'Prachason Neue', ${archivoFamily}`;
-          finalLastWord = fitTextWithEllipsis(context, lastWordText, boxWidth);
+        // Use fixed typography per provided CSS (22px, 94% line-height)
+        let allLines: Array<{ text: string; weight: "700" | "400" }> = [];
+        if (boldText) {
+          context.font = `700 ${baseFontSize}px 'Prachason Neue', ${archivoFamily}`;
+          const boldLines = wrapTextLines(context, boldText, boxWidth, lightText ? 1 : 2);
+          allLines.push(...boldLines.map((line) => ({ text: line, weight: "700" as const })));
         }
-
-        const chosenLines = [...firstLines, ...(finalLastWord ? [finalLastWord] : [])];
+        if (lightText) {
+          context.font = `400 ${baseFontSize}px 'Prachason Neue', ${archivoFamily}`;
+          const lightLines = wrapTextLines(context, lightText, boxWidth, 1);
+          allLines.push(...lightLines.map((line) => ({ text: line, weight: "400" as const })));
+        }
 
         context.fillStyle = "#000000";
         context.textAlign = "center";
         context.textBaseline = "middle";
 
-        const totalTextHeight = chosenLines.length * baseLineHeight;
+        const totalTextHeight = allLines.length * baseLineHeight;
         const startY = boxTop + (boxHeight - totalTextHeight) / 2 + baseLineHeight / 2;
 
-        chosenLines.slice(0, 3).forEach((line, index) => {
-          const isLastWordLine = Boolean(finalLastWord) && index === chosenLines.length - 1;
-          context.font = isLastWordLine
-            ? `400 ${baseFontSize}px 'Prachason Neue', ${archivoFamily}`
-            : `700 ${baseFontSize}px 'Prachason Neue', ${archivoFamily}`;
-          context.fillText(line, boxLeft + boxWidth / 2, startY + index * baseLineHeight);
+        allLines.slice(0, 3).forEach((lineObj, index) => {
+          context.font = `${lineObj.weight} ${baseFontSize}px 'Prachason Neue', ${archivoFamily}`;
+          context.fillText(lineObj.text, boxLeft + boxWidth / 2, startY + index * baseLineHeight);
         });
       } else {
         const qrImage = await loadImage(idQrDataUrl);
@@ -2025,51 +2180,45 @@ export default function AdminPage() {
 
     const scaleX = canvas.width / ID_BASE_WIDTH;
     const scaleY = canvas.height / ID_BASE_HEIGHT;
-    const templateImage = await loadImage(side === "front" ? "/FRONT%20ID.png" : "/BACK%20ID.png");
+    const templateImage = await loadImage(side === "front" ? "/For%20Automation%20_002.png" : "/BACK%20ID.png");
 
     context.drawImage(templateImage, 0, 0, canvas.width, canvas.height);
 
     if (side === "front") {
-      const typography = getIdNameTypography(idModalAttendee.name.toUpperCase());
-      const sizeScale = Math.min(scaleX, scaleY);
-      const baseFontSize = typography.fontSize * sizeScale;
-      const baseLineHeight = typography.lineHeight * sizeScale;
+      let sizeScale = Math.min(scaleX, scaleY);
+      let baseFontSize = 22 * sizeScale;
+      let baseLineHeight = baseFontSize * 0.94;
       const boxLeft = FRONT_NAME_BOX.left * scaleX;
       const boxTop = FRONT_NAME_BOX.top * scaleY;
       const boxWidth = FRONT_NAME_BOX.width * scaleX;
       const boxHeight = FRONT_NAME_BOX.height * scaleY;
       const nameText = idModalAttendee.name.toUpperCase();
 
-      const { firstNameText, lastWordText } = splitAttendeeName(nameText);
-      context.font = `700 ${baseFontSize}px 'Prachason Neue', ${archivoFamily}`;
-      const firstLines = wrapTextLines(
-        context,
-        firstNameText,
-        boxWidth,
-        lastWordText ? 2 : 3,
-      );
+      const { boldText, lightText } = splitAttendeeNameWithJr(nameText);
 
-      let finalLastWord = "";
-      if (lastWordText) {
-        context.font = `400 ${baseFontSize}px 'Prachason Neue', ${archivoFamily}`;
-        finalLastWord = fitTextWithEllipsis(context, lastWordText, boxWidth);
+      // Use fixed typography per provided CSS (22px, 94% line-height)
+      let allLines: Array<{ text: string; weight: "700" | "400" }> = [];
+      if (boldText) {
+        context.font = `700 ${baseFontSize}px 'Prachason Neue', ${archivoFamily}`;
+        const boldLines = wrapTextLines(context, boldText, boxWidth, lightText ? 1 : 2);
+        allLines.push(...boldLines.map((line) => ({ text: line, weight: "700" as const })));
       }
-
-      const chosenLines = [...firstLines, ...(finalLastWord ? [finalLastWord] : [])];
+      if (lightText) {
+        context.font = `400 ${baseFontSize}px 'Prachason Neue', ${archivoFamily}`;
+        const lightLines = wrapTextLines(context, lightText, boxWidth, 1);
+        allLines.push(...lightLines.map((line) => ({ text: line, weight: "400" as const })));
+      }
 
       context.fillStyle = "#000000";
       context.textAlign = "center";
       context.textBaseline = "middle";
 
-      const totalTextHeight = chosenLines.length * baseLineHeight;
+      const totalTextHeight = allLines.length * baseLineHeight;
       const startY = boxTop + (boxHeight - totalTextHeight) / 2 + baseLineHeight / 2;
 
-      chosenLines.slice(0, 3).forEach((line, index) => {
-        const isLastWordLine = Boolean(finalLastWord) && index === chosenLines.length - 1;
-        context.font = isLastWordLine
-          ? `400 ${baseFontSize}px 'Prachason Neue', ${archivoFamily}`
-          : `700 ${baseFontSize}px 'Prachason Neue', ${archivoFamily}`;
-        context.fillText(line, boxLeft + boxWidth / 2, startY + index * baseLineHeight);
+      allLines.slice(0, 3).forEach((lineObj, index) => {
+        context.font = `${lineObj.weight} ${baseFontSize}px 'Prachason Neue', ${archivoFamily}`;
+        context.fillText(lineObj.text, boxLeft + boxWidth / 2, startY + index * baseLineHeight);
       });
     } else {
       const qrImage = await loadImage(idQrDataUrl);
@@ -2845,9 +2994,18 @@ export default function AdminPage() {
                       Recent call activity for {conferenceLabel(selectedConference)}.
                     </p>
                   </div>
-                  <span className="rounded-lg border border-amber-100/30 px-2.5 py-1 text-xs text-amber-100">
-                    {callerLogSummary.total} entries
-                  </span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-lg border border-amber-100/30 px-2.5 py-1 text-xs text-amber-100">
+                      {callerLogSummary.total} entries
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setCallerLogsExportModalOpen(true)}
+                      className="rounded-lg border border-amber-200/40 bg-amber-500/15 px-3 py-1.5 text-xs font-semibold text-amber-100 hover:bg-amber-500/25"
+                    >
+                      Export CSV
+                    </button>
+                  </div>
                 </div>
 
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
@@ -2948,20 +3106,34 @@ export default function AdminPage() {
                             <td className="px-3 py-2 text-amber-100/90">{formatDate(row.statusSetAt ?? "")}</td>
                             <td className="px-3 py-2 text-amber-100/90">{formatDate(row.updatedAt)}</td>
                             <td className="px-3 py-2">
-                              {row.callStatus === "confirmed" ? (
+                              <div className="flex flex-wrap gap-2">
                                 <button
                                   type="button"
-                                  onClick={() => void resetCallerLogRow(row)}
-                                  disabled={callerActionKey === row.attendeeKey}
-                                  className="rounded-md border border-emerald-200/40 bg-emerald-500/15 px-3 py-1.5 text-xs font-semibold text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-60"
+                                  onClick={() => void setCallerLogRowStatus(row, "confirmed")}
+                                  disabled={callerActionKey === row.attendeeKey || row.callStatus === "confirmed"}
+                                  className="rounded-md border border-emerald-200/40 bg-emerald-500/15 px-2.5 py-1.5 text-xs font-semibold text-emerald-100 hover:bg-emerald-500/25 disabled:opacity-60"
                                 >
-                                  {callerActionKey === row.attendeeKey
-                                    ? "Resetting..."
-                                    : "Reset to Available"}
+                                  {callerActionKey === row.attendeeKey && row.callStatus !== "confirmed" ? "Saving..." : "Confirmed"}
                                 </button>
-                              ) : (
-                                <span className="text-[11px] text-amber-300/70">No action</span>
-                              )}
+                                <button
+                                  type="button"
+                                  onClick={() => void setCallerLogRowStatus(row, "not_attending")}
+                                  disabled={callerActionKey === row.attendeeKey || row.callStatus === "not_attending"}
+                                  className="rounded-md border border-rose-200/40 bg-rose-500/15 px-2.5 py-1.5 text-xs font-semibold text-rose-100 hover:bg-rose-500/25 disabled:opacity-60"
+                                >
+                                  {callerActionKey === row.attendeeKey && row.callStatus !== "not_attending" ? "Saving..." : "Not Attending"}
+                                </button>
+                                {row.callStatus === "confirmed" ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => void resetCallerLogRow(row)}
+                                    disabled={callerActionKey === row.attendeeKey}
+                                    className="rounded-md border border-amber-100/30 bg-slate-900/40 px-2.5 py-1.5 text-xs font-semibold text-amber-100 hover:bg-slate-800 disabled:opacity-60"
+                                  >
+                                    {callerActionKey === row.attendeeKey ? "Resetting..." : "Reset"}
+                                  </button>
+                                ) : null}
+                              </div>
                             </td>
                           </tr>
                         ))
@@ -4519,6 +4691,78 @@ export default function AdminPage() {
                   </div>
                 </div>
               </section>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {callerLogsExportModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 px-4 py-8 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-[2rem] border border-white/10 bg-slate-950 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.25em] text-amber-200/85">Export Caller Logs</p>
+                <h2 className="mt-2 text-2xl font-black text-white">Export Records</h2>
+                <p className="mt-2 text-sm text-slate-300">Filter and export caller logs to CSV.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCallerLogsExportModalOpen(false)}
+                className="rounded-full border border-white/10 bg-white/8 px-3 py-1.5 text-sm font-semibold text-slate-200 transition hover:bg-white/12"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-6 space-y-4">
+              <div>
+                <label className="block text-sm font-semibold text-slate-200">Filter by Caller</label>
+                <select
+                  value={callerLogsExportCaller}
+                  onChange={(event) =>
+                    setCallerLogsExportCaller(event.target.value as "all" | string)
+                  }
+                  className="mt-2 w-full rounded-lg border border-white/12 bg-white/8 px-4 py-2 text-sm text-white outline-none focus:border-amber-300/60 focus:bg-white/12"
+                >
+                  <option value="all">All Callers</option>
+                  <option value="Cathy">Cathy</option>
+                  <option value="Jewel">Jewel</option>
+                  <option value="Geneveve">Geneveve</option>
+                  <option value="Queenie">Queenie</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-slate-200">Filter by Status</label>
+                <select
+                  value={callerLogsExportStatus}
+                  onChange={(event) =>
+                    setCallerLogsExportStatus(event.target.value as "all" | "confirmed")
+                  }
+                  className="mt-2 w-full rounded-lg border border-white/12 bg-white/8 px-4 py-2 text-sm text-white outline-none focus:border-amber-300/60 focus:bg-white/12"
+                >
+                  <option value="all">All Statuses</option>
+                  <option value="confirmed">Confirmed Only</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="mt-6 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={() => void exportCallerLogs()}
+                disabled={isExportingCallerLogs}
+                className="inline-flex items-center justify-center rounded-lg bg-gradient-to-r from-amber-300 to-orange-400 px-4 py-2.5 text-sm font-bold uppercase tracking-[0.18em] text-slate-950 transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isExportingCallerLogs ? "Exporting..." : "Export to CSV"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setCallerLogsExportModalOpen(false)}
+                className="inline-flex items-center justify-center rounded-lg border border-white/10 bg-white/8 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-white/12"
+              >
+                Cancel
+              </button>
             </div>
           </div>
         </div>

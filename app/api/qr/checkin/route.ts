@@ -94,6 +94,25 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
   } else if (action === "lunch") {
+    const { data: paidPayment, error: paymentErr } = await supabase
+      .from("payments")
+      .select("id")
+      .eq("attendee_id", attendeeId)
+      .eq("payment_status", "paid")
+      .limit(1)
+      .maybeSingle();
+
+    if (paymentErr && paymentErr.code !== "PGRST116") {
+      return NextResponse.json({ error: paymentErr.message }, { status: 500 });
+    }
+
+    if (!paidPayment) {
+      return NextResponse.json(
+        { error: "Payment must be confirmed before lunch can be claimed." },
+        { status: 400 },
+      );
+    }
+
     const { error } = await supabase
       .from("attendee_checkins")
       .upsert(
