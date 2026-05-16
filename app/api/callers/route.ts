@@ -162,6 +162,43 @@ export async function POST(request: Request) {
     return NextResponse.json({ attendee: toClientRow(data as CallQueueRow) });
   }
 
+  if (body.action === "admin_status") {
+    const status = String(body.status ?? "").trim();
+
+    if (!validStatuses.has(status as CallStatus)) {
+      return NextResponse.json(
+        { error: "Use the three final status buttons: Confirmed, Not Attending, or Follow-Up Needed." },
+        { status: 400 },
+      );
+    }
+
+    const actingBy = callerName || "Admin";
+    const timestamp = new Date().toISOString();
+
+    const { data, error } = await supabase
+      .from("attendee_call_queue")
+      .update({
+        call_status: status,
+        status_set_by: actingBy,
+        status_set_at: timestamp,
+        claimed_by: null,
+        claimed_at: null,
+        call_lock_expires_at: null,
+        updated_at: timestamp,
+      })
+      .eq("attendee_key", attendeeKey)
+      .select(
+        "id,attendee_key,source_type,source_id,source_index,conference,full_name,phone_number,church,ministry,address,local_church_pastor,call_status,claimed_by,claimed_at,call_lock_expires_at,status_set_by,status_set_at,number_requested_at,number_requested_by,created_at,updated_at",
+      )
+      .single();
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 409 });
+    }
+
+    return NextResponse.json({ attendee: toClientRow(data as CallQueueRow) });
+  }
+
   if (body.action === "reset") {
     const { data, error } = await supabase
       .from("attendee_call_queue")

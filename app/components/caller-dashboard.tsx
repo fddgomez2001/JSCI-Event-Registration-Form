@@ -49,6 +49,21 @@ type StatusOption = {
   tone: string;
 };
 
+type BulkGroupView = {
+  sourceId: string;
+  contactName: string;
+  contactPhone: string;
+  church: string;
+  address: string;
+  addedByAdmin: boolean;
+  members: Array<{
+    attendeeKey: string;
+    phoneNumber: string | null;
+    fullName: string;
+    callStatus: CallStatus;
+  }>;
+};
+
 const sharedPassword = "JesusIsLord!";
 const DEFAULT_PUBLIC_APP_URL = "https://jsci-conference.vercel.app";
 
@@ -195,6 +210,23 @@ function getCallerDisplayName(slug: CallerSlug) {
   return slug.charAt(0).toUpperCase() + slug.slice(1);
 }
 
+function formatBulkMemberDisplay(member: { fullName: string; phoneNumber?: string | null }, addedByAdmin?: boolean) {
+  const phone = member.phoneNumber ? ` • ${member.phoneNumber}` : "";
+  return `${member.fullName}${phone}`;
+}
+
+function getStatusTone(status: CallStatus) {
+  const tones: Record<CallStatus, string> = {
+    available: "bg-slate-500/15 text-slate-200 ring-slate-400/25",
+    calling: "bg-blue-500/15 text-blue-200 ring-blue-400/25",
+    confirmed: "bg-emerald-500/15 text-emerald-200 ring-emerald-400/25",
+    not_attending: "bg-rose-500/15 text-rose-200 ring-rose-400/25",
+    follow_up_needed: "bg-amber-500/15 text-amber-200 ring-amber-400/25",
+    no_number: "bg-yellow-500/15 text-yellow-200 ring-yellow-400/25",
+  };
+  return tones[status] || tones.available;
+}
+
 export default function CallerDashboard({ callerSlug, displayName }: CallerDashboardProps) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [password, setPassword] = useState("");
@@ -214,6 +246,9 @@ export default function CallerDashboard({ callerSlug, displayName }: CallerDashb
   const [actionRequiredModalOpen, setActionRequiredModalOpen] = useState(false);
   const [actionRequiredFor, setActionRequiredFor] = useState<AttendeeRow | null>(null);
   const [nextAttendeeToCall, setNextAttendeeToCall] = useState<AttendeeRow | null>(null);
+  const [showIndividualConfirm, setShowIndividualConfirm] = useState(false);
+  const [individualConfirmBusyKey, setIndividualConfirmBusyKey] = useState("");
+  const [activeCallModal, setActiveCallModal] = useState<{ attendee: AttendeeRow; bulkGroup?: BulkGroupView | null } | null>(null);
 
   const supabase = useMemo(() => createSupabaseClient(), []);
   const callerName = useMemo(
@@ -458,6 +493,177 @@ export default function CallerDashboard({ callerSlug, displayName }: CallerDashb
     }
   }
 
+  async function callBulkGroup(group: BulkGroupView) {
+    const primary = group.members.find((member) => member.phoneNumber) ?? group.members[0];
+    if (!primary) {
+      setStatusMessage("No attendees in this bulk group.");
+      return;
+    }
+
+    await callAttendee(primary as unknown as AttendeeRow);
+    setActiveCallModal({ attendee: primary as unknown as AttendeeRow, bulkGroup: group });
+  }
+
+  async function cancelCall(row: AttendeeRow) {
+    setBusyKey(row.attendeeKey);
+    setStatusMessage("");
+
+    try {
+      const response = await fetch("/api/callers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "cancel_call",
+          attendeeKey: row.attendeeKey,
+          callerName,
+        }),
+      });
+
+      const data = (await response.json()) as { error?: string };
+
+      if (!response.ok) {
+        setStatusMessage(data.error ?? "Unable to cancel call.");
+        return;
+      }
+
+      await loadAttendeesSilently();
+      setActiveCallModal(null);
+      setStatusMessage(`Call with ${row.fullName} cancelled.`);
+    } catch {
+      setStatusMessage("Network error while cancelling call.");
+    } finally {
+      setBusyKey("");
+    }
+  }
+
+  async function setBulkStatus(group: BulkGroupView, nextStatus: Exclude<CallStatus, "available" | "calling">) {
+    setBusyKey(`bulk-${group.sourceId}:${nextStatus}`);
+    setStatusMessage("");
+
+    try {
+      const response = await fetch("/api/callers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "bulk_status",
+          sourceId: group.sourceId,
+          callerName,
+          status: nextStatus,
+        }),
+      });
+
+      const data = (await response.json()) as { error?: string; updatedCount?: number };
+
+      if (!response.ok) {
+        setStatusMessage(data.error ?? "Unable to update bulk status.");
+        return;
+      }
+
+      await loadAttendeesSilently();
+      setActiveCallModal(null);
+      setStatusMessage(`${group.contactName} group marked as ${statusLabels[nextStatus]} (${data.updatedCount ?? group.members.length}).`);
+    } catch {
+      setStatusMessage("Network error while updating bulk attendee status.");
+    } finally {
+      setBusyKey("");
+    }
+  }
+
+  async function resetAttendee(row: AttendeeRow) {
+    setBusyKey(`reset-${row.attendeeKey}`);
+    setStatusMessage("");
+
+    try {
+      const response = await fetch("/api/callers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "reset",
+          attendeeKey: row.attendeeKey,
+          callerName,
+        }),
+      });
+
+      const data = (await response.json()) as { error?: string };
+
+      if (!response.ok) {
+        setStatusMessage(data.error ?? "Unable to unconfirm attendee.");
+        return;
+      }
+
+      await loadAttendeesSilently();
+      setActiveCallModal(null);
+      setStatusMessage(`${row.fullName} returned to available.`);
+    } catch {
+      setStatusMessage("Network error while unconfirming attendee.");
+    } finally {
+      setBusyKey("");
+    }
+  }
+
+  async function resetBulkGroup(group: BulkGroupView) {
+    setBusyKey(`reset-bulk-${group.sourceId}`);
+    setStatusMessage("");
+
+    try {
+      const response = await fetch("/api/callers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "reset",
+          sourceId: group.sourceId,
+          callerName,
+        }),
+      });
+
+      const data = (await response.json()) as { error?: string; updatedCount?: number };
+
+      if (!response.ok) {
+        setStatusMessage(data.error ?? "Unable to unconfirm bulk group.");
+        return;
+      }
+
+      await loadAttendeesSilently();
+      setActiveCallModal(null);
+      setStatusMessage(`${group.contactName} group returned to available (${data.updatedCount ?? group.members.length}).`);
+    } catch {
+      setStatusMessage("Network error while unconfirming bulk group.");
+    } finally {
+      setBusyKey("");
+    }
+  }
+
+  async function setIndividualMemberStatus(row: AttendeeRow, nextStatus: Exclude<CallStatus, "available" | "calling">) {
+    setIndividualConfirmBusyKey(row.attendeeKey);
+    setStatusMessage("");
+
+    try {
+      const response = await fetch("/api/callers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "status",
+          attendeeKey: row.attendeeKey,
+          callerName,
+          status: nextStatus,
+        }),
+      });
+
+      const data = (await response.json()) as { error?: string };
+
+      if (!response.ok) {
+        setStatusMessage(data.error ?? "Unable to update attendee status.");
+        return;
+      }
+
+      await loadAttendeesSilently();
+      setStatusMessage(`${row.fullName} marked as ${statusLabels[nextStatus]}.`);
+    } catch {
+      setStatusMessage("Network error while updating attendee status.");
+    } finally {
+      setIndividualConfirmBusyKey("");
+    }
+  }
   async function requestNumber(row: AttendeeRow) {
     setBusyKey(row.attendeeKey);
     setStatusMessage("");
@@ -866,6 +1072,213 @@ export default function CallerDashboard({ callerSlug, displayName }: CallerDashb
         </section>
       </div>
 
+      {activeCallModal ? (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/70 px-4 py-4 backdrop-blur-sm sm:items-center sm:py-8">
+          <div className="w-full max-w-lg rounded-[2rem] border border-white/10 bg-slate-950 p-5 shadow-[0_24px_80px_rgba(0,0,0,0.55)] sm:p-6">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.24em] text-sky-200/85">Live Call Details</p>
+                <h2 className="mt-2 text-2xl font-black text-white">
+                  {activeCallModal.bulkGroup ? activeCallModal.bulkGroup.contactName : activeCallModal.attendee.fullName}
+                </h2>
+                <p className="mt-2 text-sm text-slate-300">
+                  {activeCallModal.bulkGroup
+                    ? `Bulk contact call in progress for ${activeCallModal.bulkGroup.members.length} attendees.`
+                    : "Individual attendee call in progress."}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveCallModal(null);
+                  setShowIndividualConfirm(false);
+                }}
+                className="rounded-full border border-white/10 bg-white/8 px-3 py-1.5 text-sm font-semibold text-slate-200 transition hover:bg-white/12"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-200">
+              <p><span className="font-semibold text-slate-100">Phone:</span> {activeCallModal.bulkGroup?.contactPhone || activeCallModal.attendee.phoneNumber || "-"}</p>
+              <p className="mt-1"><span className="font-semibold text-slate-100">Church:</span> {activeCallModal.bulkGroup?.church || activeCallModal.attendee.church || "-"}</p>
+              <p className="mt-1"><span className="font-semibold text-slate-100">Address:</span> {activeCallModal.bulkGroup?.address || activeCallModal.attendee.address || "-"}</p>
+              {activeCallModal.bulkGroup ? (
+                <details className="mt-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-200">
+                  <summary className="cursor-pointer font-semibold uppercase tracking-[0.14em] text-amber-200/80">
+                    {activeCallModal.bulkGroup.addedByAdmin
+                      ? `Attendee Numbers (${activeCallModal.bulkGroup.members.length})`
+                      : `Attendees Registered (${activeCallModal.bulkGroup.members.length})`}
+                  </summary>
+                  <div className="mt-2 max-h-48 overflow-y-auto pr-1 leading-6 text-slate-300">
+                    <ul className="space-y-1 pl-4">
+                      {activeCallModal.bulkGroup!.members.map((member) => (
+                        <li key={member.attendeeKey} className="list-disc">{formatBulkMemberDisplay(member, activeCallModal.bulkGroup!.addedByAdmin)}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </details>
+              ) : null}
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              {buildTelHref(activeCallModal.bulkGroup?.contactPhone || activeCallModal.attendee.phoneNumber) ? (
+                <a
+                  href={buildTelHref(activeCallModal.bulkGroup?.contactPhone || activeCallModal.attendee.phoneNumber)}
+                  className="inline-flex items-center justify-center rounded-full bg-sky-500/20 border border-sky-300/30 px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-sky-100"
+                >
+                  Open Dialer
+                </a>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => void cancelCall(activeCallModal.attendee)}
+                disabled={busyKey === activeCallModal.attendee.attendeeKey}
+                className="inline-flex items-center justify-center rounded-full bg-slate-500/15 border border-slate-400/25 px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-slate-200 disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {busyKey === activeCallModal.attendee.attendeeKey ? "Cancelling..." : "Cancel Call"}
+              </button>
+              {activeCallModal.bulkGroup && !showIndividualConfirm ? (
+                <button
+                  type="button"
+                  onClick={() => setShowIndividualConfirm(true)}
+                  className="inline-flex items-center justify-center rounded-full border border-violet-300/30 bg-violet-500/15 px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-violet-200 transition hover:bg-violet-500/25"
+                >
+                  Confirm Individually
+                </button>
+              ) : null}
+              {activeCallModal.bulkGroup && showIndividualConfirm ? (
+                <button
+                  type="button"
+                  onClick={() => setShowIndividualConfirm(false)}
+                  className="inline-flex items-center justify-center rounded-full border border-white/10 bg-white/8 px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-slate-200 transition hover:bg-white/12"
+                >
+                  Back to Bulk Actions
+                </button>
+              ) : null}
+              {activeCallModal.bulkGroup ? (
+                <button
+                  type="button"
+                  onClick={() => void resetBulkGroup(activeCallModal.bulkGroup!)}
+                  disabled={busyKey === `reset-bulk-${activeCallModal.bulkGroup.sourceId}`}
+                  className="inline-flex items-center justify-center rounded-full border border-white/10 bg-white/8 px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {busyKey === `reset-bulk-${activeCallModal.bulkGroup.sourceId}` ? "Unconfirming..." : "Unconfirm All"}
+                </button>
+              ) : activeCallModal.attendee.callStatus === "confirmed" ? (
+                <button
+                  type="button"
+                  onClick={() => void resetAttendee(activeCallModal.attendee)}
+                  disabled={busyKey === `reset-${activeCallModal.attendee.attendeeKey}`}
+                  className="inline-flex items-center justify-center rounded-full border border-white/10 bg-white/8 px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {busyKey === `reset-${activeCallModal.attendee.attendeeKey}` ? "Unconfirming..." : "Unconfirm"}
+                </button>
+              ) : null}
+              {!showIndividualConfirm ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (activeCallModal.bulkGroup) {
+                        void setBulkStatus(activeCallModal.bulkGroup, "confirmed");
+                        return;
+                      }
+                      void setCallStatus(activeCallModal.attendee, "confirmed");
+                    }}
+                    className="inline-flex items-center justify-center rounded-full bg-emerald-500/15 border border-emerald-400/25 px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-emerald-200"
+                  >
+                    {activeCallModal.bulkGroup ? "Confirm All" : "Confirmed"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (activeCallModal.bulkGroup) {
+                        void setBulkStatus(activeCallModal.bulkGroup, "not_attending");
+                        return;
+                      }
+                      void setCallStatus(activeCallModal.attendee, "not_attending");
+                    }}
+                    className="inline-flex items-center justify-center rounded-full bg-rose-500/15 border border-rose-400/25 px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-rose-200"
+                  >
+                    {activeCallModal.bulkGroup ? "Not Attending All" : "Not Attending"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (activeCallModal.bulkGroup) {
+                        void setBulkStatus(activeCallModal.bulkGroup, "follow_up_needed");
+                        return;
+                      }
+                      void setCallStatus(activeCallModal.attendee, "follow_up_needed");
+                    }}
+                    className="inline-flex items-center justify-center rounded-full bg-amber-500/15 border border-amber-400/25 px-4 py-2 text-xs font-bold uppercase tracking-[0.15em] text-amber-200"
+                  >
+                    {activeCallModal.bulkGroup ? "Follow-Up All" : "Follow-Up"}
+                  </button>
+                </>
+              ) : null}
+            </div>
+
+            {activeCallModal.bulkGroup && showIndividualConfirm ? (
+              <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4">
+                <p className="text-sm font-semibold text-slate-200 mb-3">Confirm attendees individually:</p>
+                <div className="max-h-64 overflow-y-auto">
+                  <div className="space-y-2">
+                    {activeCallModal.bulkGroup.members.map((member) => (
+                      <div key={member.attendeeKey} className="flex items-center justify-between rounded-xl border border-white/8 bg-white/5 p-3">
+                        <div className="flex-1">
+                          <p className="text-sm font-semibold text-white">{formatBulkMemberDisplay(member, activeCallModal.bulkGroup!.addedByAdmin)}</p>
+                          <p className="text-xs text-slate-400 mt-1">{member.phoneNumber || "No phone"}</p>
+                          <div className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em] ring-1 mt-1 ${getStatusTone(member.callStatus)}`}>
+                            {statusLabels[member.callStatus]}
+                          </div>
+                        </div>
+                        <div className="flex flex-col gap-1 ml-3">
+                          <button
+                            type="button"
+                            onClick={() => void setIndividualMemberStatus(member as unknown as AttendeeRow, "confirmed")}
+                            disabled={individualConfirmBusyKey === member.attendeeKey || member.callStatus === "confirmed"}
+                            className="inline-flex items-center justify-center rounded-full bg-emerald-500/15 border border-emerald-400/25 px-2 py-1 text-[9px] font-bold uppercase tracking-[0.12em] text-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {individualConfirmBusyKey === member.attendeeKey ? "..." : "✓"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void setIndividualMemberStatus(member as unknown as AttendeeRow, "not_attending")}
+                            disabled={individualConfirmBusyKey === member.attendeeKey || member.callStatus === "not_attending"}
+                            className="inline-flex items-center justify-center rounded-full bg-rose-500/15 border border-rose-400/25 px-2 py-1 text-[9px] font-bold uppercase tracking-[0.12em] text-rose-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {individualConfirmBusyKey === member.attendeeKey ? "..." : "✗"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void setIndividualMemberStatus(member as unknown as AttendeeRow, "follow_up_needed")}
+                              disabled={individualConfirmBusyKey === member.attendeeKey || member.callStatus === "follow_up_needed"}
+                            className="inline-flex items-center justify-center rounded-full bg-amber-500/15 border border-amber-400/25 px-2 py-1 text-[9px] font-bold uppercase tracking-[0.12em] text-amber-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {individualConfirmBusyKey === member.attendeeKey ? "..." : "~"}
+                          </button>
+                          {member.callStatus === "confirmed" ? (
+                            <button
+                              type="button"
+                              onClick={() => void resetAttendee(member as unknown as AttendeeRow)}
+                              disabled={busyKey === `reset-${member.attendeeKey}`}
+                              className="inline-flex items-center justify-center rounded-full border border-white/30 bg-white/8 px-2 py-1 text-[9px] font-bold uppercase tracking-[0.12em] text-slate-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              {busyKey === `reset-${member.attendeeKey}` ? "..." : "↺"}
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
       {qrPreview ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 px-4 py-8 backdrop-blur-sm">
           <div className="w-full max-w-md rounded-[2rem] border border-white/10 bg-slate-950 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.55)]">

@@ -16,11 +16,6 @@ const committeeNames = [
   "Quennie",
 ] as const;
 const loginStorageKey = "qrreader-committee-login";
-const SCAN_INTERVAL_MS = 80; // reduced interval for faster retries (about 12.5 FPS)
-const MAX_SCAN_WIDTH = 480; // lower max width to process fewer pixels
-const tableViews = ["scanner", "checkin", "lunch", "log"] as const;
-
-type TableView = (typeof tableViews)[number];
 
 type ScanModalState = {
   conference: "LEYTE Conference" | "CEBU Conference";
@@ -30,19 +25,34 @@ type ScanModalState = {
   attendeeId: string;
   checkedIn: boolean;
   lunch: boolean;
+  paymentAmount: number;
+  paymentStatus: "pending" | "paid";
+  paidAt?: string | null;
+  paidByCommittee?: string | null;
+  kit: {
+    toteBag: boolean;
+    mug: boolean;
+    notebook: boolean;
+    pencil: boolean;
+    claimedAt?: string | null;
+    claimedByCommittee?: string | null;
+  };
 };
 
-type TableRow = {
+type BulkAttendee = {
   id: string;
-  fullName: string;
-  church: string;
-  ministry: string;
-  checkedInAt?: string | null;
-  lunchAt?: string | null;
-  committeeName?: string | null;
-  actionType?: string | null;
-  scannedAt?: string | null;
-  conference?: "LEYTE Conference" | "CEBU Conference";
+  name: string;
+  church: string | null;
+  ministry: string | null;
+  conference: string | null;
+  selected?: boolean;
+};
+
+type BulkModalState = {
+  bulkRegistrationId: string;
+  contactPerson: string | null;
+  attendees: BulkAttendee[];
+  conference: "LEYTE Conference" | "CEBU Conference";
 };
 
 export default function QRReaderPage() {
@@ -52,28 +62,37 @@ export default function QRReaderPage() {
   const [rememberMe, setRememberMe] = useState(true);
   const [loginReady, setLoginReady] = useState(false);
   const [error, setError] = useState("");
-  const [tableView, setTableView] = useState<TableView>("scanner");
-  const [tableRows, setTableRows] = useState<TableRow[]>([]);
-  const [showTableModal, setShowTableModal] = useState(false);
-  const [tableTitle, setTableTitle] = useState("Scanner");
-  const [tableLoading, setTableLoading] = useState(false);
-  const [tableError, setTableError] = useState("");
 
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const rafRef = useRef<number | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const contextRef = useRef<CanvasRenderingContext2D | null>(null);
-  const lastDecodeAtRef = useRef(0);
-  const lastScanRef = useRef("");
-  const scannerActiveRef = useRef(false);
-  const keyboardBufferRef = useRef("");
-  const keyboardTimerRef = useRef<number | null>(null);
-  const tableViewRef = useRef<TableView>("scanner");
-  const [scanning, setScanning] = useState(false);
-  const [lastScan, setLastScan] = useState<string | null>(null);
-  const [modal, setModal] = useState<ScanModalState | null>(null);
+  const scanInputRef = useRef<HTMLInputElement | null>(null);
   const [manualCode, setManualCode] = useState("");
-  const [manualScanBusy, setManualScanBusy] = useState(false);
+  const [modal, setModal] = useState<ScanModalState | null>(null);
+  const [processingAttendeeId, setProcessingAttendeeId] = useState<string | null>(null);
+  const [paymentProcessing, setPaymentProcessing] = useState(false);
+  const [lunchProcessing, setLunchProcessing] = useState(false);
+  const [kitProcessing, setKitProcessing] = useState(false);
+  const [walkInOpen, setWalkInOpen] = useState(false);
+  const [walkInSaving, setWalkInSaving] = useState(false);
+  const [walkInFullName, setWalkInFullName] = useState("");
+  const [walkInChurch, setWalkInChurch] = useState("");
+  const [bulkModal, setBulkModal] = useState<BulkModalState | null>(null);
+  const [bulkPaymentProcessing, setBulkPaymentProcessing] = useState(false);
+  const [showScanAnimation, setShowScanAnimation] = useState(false);
+  const [paidSearch, setPaidSearch] = useState("");
+  const [cameraActive, setCameraActive] = useState(false);
+  const [userSearch, setUserSearch] = useState("");
+  const [searchResults, setSearchResults] = useState<Array<{ id: string; fullName: string; church?: string; ministry?: string; paymentStatus?: "paid" | "pending"; lunchClaimed?: boolean }>>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const [paidAttendees, setPaidAttendees] = useState<Array<{
+    name: string;
+    amount: number;
+    paidAt: string;
+    paidByCommittee: string;
+    attendeeId: string;
+  }>>([]);
 
   useEffect(() => {
     setLoginReady(true);
@@ -102,223 +121,43 @@ export default function QRReaderPage() {
   }, []);
 
   useEffect(() => {
-    lastScanRef.current = lastScan ?? "";
-  }, [lastScan]);
+    if (isAuthenticated && scanInputRef.current) {
+      scanInputRef.current.focus();
+    }
+  }, [isAuthenticated]);
 
   useEffect(() => {
-    tableViewRef.current = tableView;
-  }, [tableView]);
-
-  useEffect(() => {
-    if (!isAuthenticated || tableView !== "scanner") return;
-    void startScanner();
-    return () => stopScanner();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthenticated, tableView]);
-
-  useEffect(() => {
-    if (!isAuthenticated || tableView !== "scanner") return;
+    if (!isAuthenticated) return;
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (modal) return;
-
+      if (modal || bulkModal || walkInOpen) return;
       if (event.key === "Enter") {
-        const raw = keyboardBufferRef.current.trim();
-        keyboardBufferRef.current = "";
-        if (keyboardTimerRef.current) {
-          window.clearTimeout(keyboardTimerRef.current);
-          keyboardTimerRef.current = null;
-        }
-        if (raw.length >= 8) {
-          const normalized = normalizeScannedValue(raw);
-          if (normalized && normalized !== lastScanRef.current) {
-            setLastScan(normalized);
-            void handleScanned(normalized);
-          }
-        }
-        return;
-      }
-
-      if (event.key.length === 1) {
-        keyboardBufferRef.current += event.key;
-        if (keyboardTimerRef.current) {
-          window.clearTimeout(keyboardTimerRef.current);
-        }
-        keyboardTimerRef.current = window.setTimeout(() => {
-          keyboardBufferRef.current = "";
-          keyboardTimerRef.current = null;
-        }, 300);
+        handleUSBScan();
       }
     };
 
     window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      if (keyboardTimerRef.current) {
-        window.clearTimeout(keyboardTimerRef.current);
-        keyboardTimerRef.current = null;
-      }
-    };
-  }, [isAuthenticated, lastScan, modal, tableView]);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isAuthenticated, modal, bulkModal, walkInOpen, manualCode]);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const params = new URLSearchParams(window.location.search);
-    const code = params.get("code");
-    if (!code || !isAuthenticated || tableView !== "scanner") return;
-    const normalized = normalizeScannedValue(code);
-    if (normalized) {
-      setLastScan(normalized);
-      void handleScanned(normalized);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthenticated, tableView]);
-
-  function normalizeScannedValue(raw: string) {
-    const value = String(raw ?? "").trim();
-    if (!value) return "";
-
-    try {
-      const url = new URL(value);
-      const sourceType = url.searchParams.get("sourceType");
-      const sourceId = url.searchParams.get("sourceId");
-      const name = url.searchParams.get("name");
-      if (sourceType && sourceId) {
-        return url.toString();
+    return () => {
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
       }
+    };
+  }, []);
 
-      const codeFromQuery = url.searchParams.get("code");
-      if (codeFromQuery) return codeFromQuery.trim();
-      const maybeUuidPath = url.pathname.split("/").filter(Boolean).pop() ?? "";
-      if (maybeUuidPath) return maybeUuidPath.trim();
-    } catch {
-      // Not a URL, treat as raw code
-    }
+  async function handleUSBScan() {
+    const raw = manualCode.trim();
+    if (!raw) return;
 
-    return value;
-  }
+    setManualCode("");
+    setShowScanAnimation(true);
+    setTimeout(() => setShowScanAnimation(false), 500);
 
-  async function startScanner() {
-    if (scannerActiveRef.current) return;
-    scannerActiveRef.current = true;
-    setScanning(true);
-    setError("");
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: "environment" },
-          width: { ideal: 640, max: 1280 },
-          height: { ideal: 360, max: 720 },
-          frameRate: { ideal: 30, max: 30 },
-        },
-      });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
+    setProcessingAttendeeId(raw);
 
-      const detector = (window as any).BarcodeDetector ? new (window as any).BarcodeDetector({ formats: ["qr_code"] }) : null;
-
-      const loop = async () => {
-        if (!videoRef.current || videoRef.current.readyState < 2) {
-          rafRef.current = requestAnimationFrame(loop);
-          return;
-        }
-
-        const now = performance.now();
-        if (now - lastDecodeAtRef.current < SCAN_INTERVAL_MS) {
-          rafRef.current = requestAnimationFrame(loop);
-          return;
-        }
-        lastDecodeAtRef.current = now;
-
-        try {
-          if (detector) {
-            const barcodes = await detector.detect(videoRef.current);
-            if (barcodes && barcodes.length) {
-              const raw = normalizeScannedValue(String(barcodes[0].rawValue ?? ""));
-              if (raw && raw !== lastScanRef.current) {
-                setLastScan(raw);
-                await handleScanned(raw);
-              }
-            }
-          } else {
-            await scanWithCanvas(videoRef.current);
-          }
-        } catch {
-          // ignore
-        }
-
-        rafRef.current = requestAnimationFrame(loop);
-      };
-
-      rafRef.current = requestAnimationFrame(loop);
-    } catch (err) {
-      setError("Camera access denied or unavailable.");
-      scannerActiveRef.current = false;
-      setScanning(false);
-    }
-  }
-
-  function stopScanner() {
-    scannerActiveRef.current = false;
-    setScanning(false);
-    setLastScan("");
-    if (rafRef.current) {
-      window.cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    }
-    const stream = videoRef.current?.srcObject as MediaStream | null | undefined;
-    if (stream) {
-      stream.getTracks().forEach((t) => t.stop());
-    }
-    if (videoRef.current) videoRef.current.srcObject = null;
-  }
-
-  async function scanWithCanvas(video: HTMLVideoElement) {
-    if (!canvasRef.current) {
-      canvasRef.current = document.createElement("canvas");
-      contextRef.current = canvasRef.current.getContext("2d");
-    }
-    const canvas = canvasRef.current;
-    const ctx = contextRef.current;
-    if (!ctx) return;
-
-    if (!video || video.readyState < 2) {
-      return;
-    }
-
-    const sourceWidth = video.videoWidth || 640;
-    const sourceHeight = video.videoHeight || 360;
-
-    // Crop to center region to reduce processed pixels (most QR codes will be near center)
-    const CROP_RATIO = 0.6; // process central 60% area
-    const sw = Math.max(1, Math.floor(sourceWidth * CROP_RATIO));
-    const sh = Math.max(1, Math.floor(sourceHeight * CROP_RATIO));
-    const sx = Math.floor((sourceWidth - sw) / 2);
-    const sy = Math.floor((sourceHeight - sh) / 2);
-
-    const scale = sourceWidth > MAX_SCAN_WIDTH ? MAX_SCAN_WIDTH / sourceWidth : 1;
-    canvas.width = Math.max(1, Math.floor(sw * scale));
-    canvas.height = Math.max(1, Math.floor(sh * scale));
-
-    // draw only the cropped center region scaled to canvas
-    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const result = jsQR(imageData.data, imageData.width, imageData.height, {
-      inversionAttempts: "attemptBoth",
-    });
-    if (result?.data) {
-      const raw = normalizeScannedValue(result.data);
-      if (raw && raw !== lastScanRef.current) {
-        setLastScan(raw);
-        await handleScanned(raw);
-      }
-    }
-  }
-
-  async function handleScanned(raw: string) {
-    // Payload is attendee UUID
     try {
       const res = await fetch("/api/qr/lookup", {
         method: "POST",
@@ -328,6 +167,7 @@ export default function QRReaderPage() {
 
       if (!res.ok) {
         setError("Attendee not found.");
+        setProcessingAttendeeId(null);
         return;
       }
 
@@ -337,400 +177,589 @@ export default function QRReaderPage() {
         fullName: body.fullName,
         ministry: body.ministry ?? "",
         church: body.church ?? "",
-        attendeeId: raw,
+        attendeeId: body.attendeeId ?? raw,
         checkedIn: !!body.checkedIn,
         lunch: !!body.lunch,
+        paymentAmount: 200,
+        paymentStatus: "pending",
+        paidAt: null,
+        paidByCommittee: null,
+        kit: {
+          toteBag: false,
+          mug: false,
+          notebook: false,
+          pencil: false,
+          claimedAt: null,
+          claimedByCommittee: null,
+        },
       });
-      // stop camera while modal is open
-      stopScanner();
+
+      void (async () => {
+        try {
+          const resolvedAttendeeId = body.attendeeId ?? raw;
+          const paymentRes = await fetch(`/api/qr/payment?attendeeId=${encodeURIComponent(resolvedAttendeeId)}`);
+          if (!paymentRes.ok) return;
+
+          const paymentData = await paymentRes.json();
+          if (!paymentData.data) return;
+
+          setModal((current) =>
+            current
+              ? {
+                  ...current,
+                  paymentStatus: paymentData.data.paymentStatus,
+                  paidAt: paymentData.data.paidAt,
+                  paidByCommittee: paymentData.data.paidByCommittee,
+                }
+              : current,
+          );
+          const kitRes = await fetch(`/api/qr/kit?attendeeId=${encodeURIComponent(resolvedAttendeeId)}`);
+          if (!kitRes.ok) return;
+          const kitData = await kitRes.json();
+          if (!kitData.data) return;
+          setModal((current) =>
+            current
+              ? {
+                  ...current,
+                  kit: {
+                    toteBag: !!kitData.data.toteBag,
+                    mug: !!kitData.data.mug,
+                    notebook: !!kitData.data.notebook,
+                    pencil: !!kitData.data.pencil,
+                    claimedAt: kitData.data.claimedAt,
+                    claimedByCommittee: kitData.data.claimedByCommittee,
+                  },
+                }
+              : current,
+          );
+        } catch {
+          // Keep the modal open with the initial state.
+        }
+      })();
     } catch (e) {
-      setError("Lookup error.");
+      setError("Lookup error. Please try again.");
+    } finally {
+      setProcessingAttendeeId(null);
     }
   }
 
-  async function doAction(action: "checkin" | "lunch") {
+  async function confirmPayment() {
     if (!modal) return;
+    setPaymentProcessing(true);
     setError("");
+
     try {
-      const res = await fetch("/api/qr/checkin", {
+      const res = await fetch("/api/qr/payment", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ attendeeKey: modal.attendeeId, attendeeId: modal.attendeeId, action, committeeName }),
+        body: JSON.stringify({
+          attendeeId: modal.attendeeId,
+          attendeeName: modal.fullName,
+          committeeName: committeeName,
+          conferenceLabel: modal.conference,
+        }),
       });
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        setError(body.error ?? "Unable to save.");
+        setError(body.message ?? "Unable to record payment.");
         return;
       }
 
       const body = await res.json();
+      if (body.data) {
+        const updatedModal = {
+          ...modal,
+          paymentStatus: body.data.paymentStatus as "pending" | "paid",
+          paidAt: body.data.paidAt,
+          paidByCommittee: body.data.paidByCommittee,
+        };
+
+        // Add to paid list
+        if (body.data.paymentStatus === "paid" && body.data.paidAt) {
+          addToPaidList({
+            name: modal.fullName,
+            amount: modal.paymentAmount,
+            paidAt: body.data.paidAt,
+            paidByCommittee: body.data.paidByCommittee || committeeName,
+            attendeeId: modal.attendeeId,
+          });
+        }
+
+        // Auto check-in after payment
+        try {
+          const checkinRes = await fetch("/api/qr/checkin", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ attendeeKey: modal.attendeeId, action: "checkin", committeeName }),
+          });
+
+          if (checkinRes.ok) {
+            updatedModal.checkedIn = true;
+          }
+        } catch {
+          // Continue even if check-in fails
+        }
+
+        setModal(updatedModal);
+      }
+    } catch (err) {
+      setError("Unable to record payment.");
+    } finally {
+      setPaymentProcessing(false);
+    }
+  }
+
+  async function markLunchClaimed() {
+    if (!modal || modal.lunch) return;
+    if (modal.paymentStatus !== "paid") {
+      setError("Payment must be confirmed before lunch can be claimed.");
+      return;
+    }
+    setLunchProcessing(true);
+    setError("");
+
+    try {
+      const res = await fetch("/api/qr/checkin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ attendeeId: modal.attendeeId, action: "lunch", committeeName }),
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setError(body.error ?? "Unable to mark lunch claim.");
+        return;
+      }
+
+      setModal((current) => (current ? { ...current, lunch: true } : current));
+    } catch {
+      setError("Unable to mark lunch claim.");
+    } finally {
+      setLunchProcessing(false);
+    }
+  }
+
+  function addToPaidList(attendee: { name: string; amount: number; paidAt: string; paidByCommittee: string; attendeeId: string }) {
+    setPaidAttendees(prev => [attendee, ...prev]);
+  }
+
+  async function startCamera() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment" },
+        audio: false,
+      });
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        setCameraActive(true);
+        scanWithCamera();
+      }
+    } catch (err) {
+      setError("Unable to access camera. Please check permissions.");
+    }
+  }
+
+  function stopCamera() {
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    if (videoRef.current && videoRef.current.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      stream.getTracks().forEach((track) => track.stop());
+      videoRef.current.srcObject = null;
+    }
+    setCameraActive(false);
+  }
+
+  function scanWithCamera() {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const scan = () => {
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = jsQR(imageData.data, imageData.width, imageData.height);
+
+        if (code) {
+          stopCamera();
+          handleQRScan(code.data);
+          return;
+        }
+      }
+      rafRef.current = requestAnimationFrame(scan);
+    };
+
+    scan();
+  }
+
+  async function handleQRScan(rawValue: string) {
+    if (cameraActive) {
+      stopCamera();
+    }
+    setShowScanAnimation(true);
+    setTimeout(() => setShowScanAnimation(false), 500);
+    setProcessingAttendeeId(rawValue);
+
+    try {
+      const res = await fetch("/api/qr/lookup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ attendeeKey: rawValue, attendeeId: rawValue, committeeName }),
+      });
+
+      if (!res.ok) {
+        setError("Attendee not found.");
+        setProcessingAttendeeId(null);
+        return;
+      }
+
+      const body = await res.json();
+
       setModal({
-        ...modal,
+        conference: body.conference,
+        fullName: body.fullName,
+        ministry: body.ministry ?? "",
+        church: body.church ?? "",
+        attendeeId: body.attendeeId ?? rawValue,
         checkedIn: !!body.checkedIn,
         lunch: !!body.lunch,
-      } as ScanModalState);
-    } catch {
-      setError("Unable to save.");
-    }
-  }
-
-  async function loadTable(view: Exclude<TableView, "scanner">) {
-    setTableView(view);
-    setTableError("");
-    setTableLoading(true);
-    stopScanner();
-    setShowTableModal(true);
-    setModal(null);
-
-    const nextTitle =
-      view === "checkin" ? "Check-in List" : view === "lunch" ? "Lunch Table" : "Scan Log";
-    setTableTitle(nextTitle);
-
-    try {
-      const response = await fetch(`/api/qr/tables?view=${view}&committeeName=${encodeURIComponent(committeeName)}`, {
-        cache: "no-store",
+        paymentAmount: 200,
+        paymentStatus: "pending",
+        paidAt: null,
+        paidByCommittee: null,
+        kit: {
+          toteBag: false,
+          mug: false,
+          notebook: false,
+          pencil: false,
+          claimedAt: null,
+          claimedByCommittee: null,
+        },
       });
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.error ?? "Unable to load table.");
-      }
-      const body = (await response.json()) as { rows: TableRow[] };
-      setTableRows(body.rows ?? []);
-    } catch (loadError) {
-      setTableRows([]);
-      setTableError(loadError instanceof Error ? loadError.message : "Unable to load table.");
+
+      void (async () => {
+        try {
+          const resolvedAttendeeId = body.attendeeId ?? rawValue;
+          const paymentRes = await fetch(`/api/qr/payment?attendeeId=${encodeURIComponent(resolvedAttendeeId)}`);
+          if (!paymentRes.ok) return;
+
+          const paymentData = await paymentRes.json();
+          if (!paymentData.data) return;
+
+          setModal((current) =>
+            current
+              ? {
+                  ...current,
+                  paymentStatus: paymentData.data.paymentStatus,
+                  paidAt: paymentData.data.paidAt,
+                  paidByCommittee: paymentData.data.paidByCommittee,
+                }
+              : current,
+          );
+          const kitRes = await fetch(`/api/qr/kit?attendeeId=${encodeURIComponent(resolvedAttendeeId)}`);
+          if (!kitRes.ok) return;
+          const kitData = await kitRes.json();
+          if (!kitData.data) return;
+          setModal((current) =>
+            current
+              ? {
+                  ...current,
+                  kit: {
+                    toteBag: !!kitData.data.toteBag,
+                    mug: !!kitData.data.mug,
+                    notebook: !!kitData.data.notebook,
+                    pencil: !!kitData.data.pencil,
+                    claimedAt: kitData.data.claimedAt,
+                    claimedByCommittee: kitData.data.claimedByCommittee,
+                  },
+                }
+              : current,
+          );
+        } catch {
+          // Keep the modal open with the initial state.
+        }
+      })();
+    } catch (e) {
+      setError("Lookup error. Please try again.");
     } finally {
-      setTableLoading(false);
+      setProcessingAttendeeId(null);
     }
   }
+  function toggleKitItem(item: "toteBag" | "mug" | "notebook" | "pencil") {
+    setModal((current) =>
+      current
+        ? {
+            ...current,
+            kit: {
+              ...current.kit,
+              [item]: !current.kit[item],
+            },
+          }
+        : current,
+    );
+  }
 
-  async function saveManualCode() {
-    const normalized = normalizeScannedValue(manualCode);
-    if (!normalized) return;
-    setManualScanBusy(true);
+  function checkAllKitItems() {
+    setModal((current) =>
+      current
+        ? {
+            ...current,
+            kit: {
+              ...current.kit,
+              toteBag: true,
+              mug: true,
+              notebook: true,
+              pencil: true,
+            },
+          }
+        : current,
+    );
+  }
+
+  async function claimKitItems(claimAll = false) {
+    if (!modal) return;
+    if (modal.paymentStatus !== "paid") {
+      setError("Payment must be confirmed before kit can be claimed.");
+      return;
+    }
+
+    const payload = claimAll
+      ? { attendeeId: modal.attendeeId, committeeName, claimAll: true }
+      : {
+          attendeeId: modal.attendeeId,
+          committeeName,
+          toteBag: modal.kit.toteBag,
+          mug: modal.kit.mug,
+          notebook: modal.kit.notebook,
+          pencil: modal.kit.pencil,
+        };
+
+    setKitProcessing(true);
+    setError("");
+
     try {
-      setLastScan(normalized);
-      await handleScanned(normalized);
+      const res = await fetch("/api/qr/kit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const body = await res.json().catch(() => ({}));
+
+      if (!res.ok || !body.data) {
+        setError(body.message ?? "Unable to save kit claim.");
+        return;
+      }
+
+      setModal((current) =>
+        current
+          ? {
+              ...current,
+              kit: {
+                toteBag: !!body.data.toteBag,
+                mug: !!body.data.mug,
+                notebook: !!body.data.notebook,
+                pencil: !!body.data.pencil,
+                claimedAt: body.data.claimedAt,
+                claimedByCommittee: body.data.claimedByCommittee,
+              },
+            }
+          : current,
+      );
+    } catch {
+      setError("Unable to save kit claim.");
     } finally {
-      setManualScanBusy(false);
+      setKitProcessing(false);
     }
   }
 
-  function logout() {
-    stopScanner();
-    setIsAuthenticated(false);
-    setTableView("scanner");
-    setTableRows([]);
-    setTableError("");
-    setModal(null);
+  async function submitWalkInRegistration() {
+    const fullName = walkInFullName.trim();
+    const church = walkInChurch.trim();
+
+    if (!fullName || !church) {
+      setError("Full Name and Church are required for walk-in registration.");
+      return;
+    }
+
+    setWalkInSaving(true);
+    setError("");
+
+    try {
+      const res = await fetch("/api/qr/walk-in", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fullName,
+          church,
+          committeeName,
+          conference: "leyte",
+        }),
+      });
+
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.data) {
+        setError(body.message ?? "Unable to register walk-in attendee.");
+        return;
+      }
+
+      setError(`Walk-in registered: ${body.data.fullName}`);
+      setWalkInOpen(false);
+      setWalkInFullName("");
+      setWalkInChurch("");
+    } catch {
+      setError("Unable to register walk-in attendee.");
+    } finally {
+      setWalkInSaving(false);
+    }
   }
 
-  function renderLogin() {
-    return (
-      <div className="fixed inset-0 flex items-center justify-center bg-[radial-gradient(circle_at_top,rgba(248,205,112,0.2),transparent_40%),linear-gradient(135deg,#0b1220_0%,#0f172a_45%,#1f2937_100%)] px-4 py-8">
-        <div className="w-full max-w-md rounded-[2rem] border border-white/10 bg-slate-950/90 p-6 text-white shadow-[0_20px_80px_rgba(0,0,0,0.45)] backdrop-blur-xl sm:p-8">
-          <p className="text-xs font-semibold uppercase tracking-[0.32em] text-amber-300/80">Committee Login</p>
-          <h1 className="mt-3 text-3xl font-black tracking-tight text-white">Welcome Committee</h1>
-          <p className="mt-2 text-sm text-slate-300">Enter your committee name and password to open the QR scanner.</p>
+  const filteredPaidAttendees = paidAttendees.filter((attendee) => {
+    const searchValue = paidSearch.trim().toLowerCase();
+    if (!searchValue) return true;
 
-          <form onSubmit={handleLogin} className="mt-6 space-y-4">
-            <div>
-              <label className="mb-2 block text-sm font-semibold text-slate-200">Committee Name</label>
-              <select
-                value={committeeName}
-                onChange={(event) => setCommitteeName(event.target.value as typeof committeeNames[number])}
-                className="w-full rounded-2xl border border-white/10 bg-white/95 px-4 py-3 text-slate-950 outline-none ring-0 transition focus:border-amber-300 focus:shadow-[0_0_0_4px_rgba(251,191,36,0.14)]"
-                required
-              >
-                <option value="">Select committee name</option>
-                {committeeNames.map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-            </div>
+    return [
+      attendee.name,
+      attendee.paidByCommittee,
+      attendee.amount.toString(),
+      new Date(attendee.paidAt).toLocaleTimeString(),
+    ].some((value) => value.toLowerCase().includes(searchValue));
+  });
 
-            <div>
-              <label className="mb-2 block text-sm font-semibold text-slate-200">Password</label>
-              <input
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                type="password"
-                className="w-full rounded-2xl border border-white/10 bg-white/95 px-4 py-3 text-slate-950 outline-none ring-0 transition focus:border-amber-300 focus:shadow-[0_0_0_4px_rgba(251,191,36,0.14)]"
-                placeholder="Enter password"
-                required
-              />
-            </div>
+  async function handleBulkQR(bulkRegistrationId: string, contactPerson: string | null) {
+    setProcessingAttendeeId(bulkRegistrationId);
+    setShowScanAnimation(true);
+    setTimeout(() => setShowScanAnimation(false), 500);
 
-            <label className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-200">
-              <input
-                type="checkbox"
-                checked={rememberMe}
-                onChange={(event) => setRememberMe(event.target.checked)}
-                className="h-4 w-4 rounded border-white/20 bg-slate-900 text-amber-400 accent-amber-400"
-              />
-              Remember me on this device
-            </label>
+    try {
+      const res = await fetch(
+        `/api/qr/bulk-attendees?bulkRegistrationId=${encodeURIComponent(bulkRegistrationId)}&contactPerson=${encodeURIComponent(contactPerson || "")}`
+      );
 
-            {error ? <p className="rounded-2xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</p> : null}
+      if (!res.ok) {
+        setError("Unable to load bulk attendees.");
+        return;
+      }
 
-            <button className="w-full rounded-2xl bg-gradient-to-r from-amber-300 via-amber-400 to-orange-400 px-4 py-3 font-black text-slate-950 shadow-[0_12px_30px_rgba(251,191,36,0.25)] transition hover:brightness-105">
-              Enter Scanner
-            </button>
-          </form>
+      const body = await res.json();
+      if (body.data && body.data.attendees) {
+        const attendees: BulkAttendee[] = body.data.attendees.map((att: any) => ({
+          id: att.id,
+          name: att.name,
+          church: att.church,
+          ministry: att.ministry,
+          conference: att.conference,
+          selected: false,
+        }));
 
-          <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-300">
-            <p className="font-semibold text-amber-200">Allowed committee names</p>
-            <p className="mt-2 leading-relaxed">Frank, Psalm, Cathy, Cris, Merianne, Caroline, Josiah, Julie, Quennie</p>
-          </div>
-        </div>
-      </div>
-    );
+        setBulkModal({
+          bulkRegistrationId,
+          contactPerson: body.data.contactPerson,
+          attendees,
+          conference: body.data.attendees[0]?.conference?.toLowerCase().includes("cebu")
+            ? "CEBU Conference"
+            : "LEYTE Conference",
+        });
+      }
+    } catch (err) {
+      setError("Bulk QR lookup error.");
+    } finally {
+      setProcessingAttendeeId(null);
+    }
   }
 
-  function renderScannerContent() {
-    return (
-      <div className="grid gap-6 lg:grid-cols-[1.5fr_0.7fr] items-start">
-        <section className="rounded-[2rem] border border-white/10 bg-white/8 p-4 shadow-[0_16px_60px_rgba(0,0,0,0.28)] backdrop-blur-xl sm:p-6">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.3em] text-amber-300/80">Scanner</p>
-              <h2 className="mt-2 text-2xl font-black text-white">Point the camera at the attendee QR</h2>
-              <p className="mt-2 text-sm text-slate-300">Logged in as {committeeName || "Committee"}. Use the buttons to open the filtered tables or the scan log.</p>
-            </div>
-            {/* scanner-only view: buttons below open table modal */}
-            <div className="rounded-2xl border border-amber-300/20 bg-amber-300/10 px-4 py-3 text-right">
-              <p className="text-[0.65rem] uppercase tracking-[0.28em] text-amber-200/80">Active Committee</p>
-              <p className="mt-1 text-lg font-black text-white">{committeeName || "Unknown"}</p>
-            </div>
-          </div>
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const sourceType = params.get("sourceType");
+    const sourceId = params.get("sourceId");
+    const name = params.get("name");
 
-          <div className="mt-5 overflow-hidden rounded-2xl bg-gradient-to-b from-slate-900/70 to-slate-900/40 p-3 shadow-lg">
-            <video
-              ref={videoRef}
-              className="w-full h-[360px] sm:h-[420px] md:h-[520px] lg:h-[620px] rounded-[1.2rem] bg-black object-cover"
-              playsInline
-              muted
-            />
-          </div>
+    if (!isAuthenticated) return;
 
-          <div className="mt-4 flex flex-wrap gap-3">
-            <button
-              type="button"
-              onClick={() => void loadTable("checkin")}
-              className="rounded-full bg-amber-400 px-4 py-2.5 font-semibold text-slate-950 shadow-sm hover:brightness-105 transition"
-            >
-              Check-in List
-            </button>
-            <button
-              type="button"
-              onClick={() => void loadTable("lunch")}
-              className="rounded-full bg-amber-400/90 px-4 py-2.5 font-semibold text-slate-950 shadow-sm hover:brightness-105 transition"
-            >
-              Lunch Table
-            </button>
-            <button
-              type="button"
-              onClick={() => void loadTable("log")}
-              className="rounded-full bg-white/10 px-4 py-2.5 font-semibold text-white shadow-sm hover:bg-white/20 transition"
-            >
-              Scan Log
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                stopScanner();
-                void startScanner();
-              }}
-              className="rounded-full bg-white/6 px-4 py-2.5 font-semibold text-white shadow-sm hover:bg-white/10 transition"
-            >
-              Restart Scanner
-            </button>
-            <button type="button" onClick={logout} className="rounded-full bg-rose-500 px-4 py-2.5 font-semibold text-white shadow-sm hover:brightness-95 transition">
-              Logout
-            </button>
-          </div>
+    if (sourceType === "bulk" && sourceId) {
+      void handleBulkQR(sourceId, name);
+    }
+  }, [isAuthenticated]);
 
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            <div>
-              <label className="mb-2 block text-sm font-semibold text-slate-200">USB scanner / manual code</label>
-              <div className="flex gap-2">
-                <input
-                  value={manualCode}
-                  onChange={(event) => setManualCode(event.target.value)}
-                  placeholder="Paste scan result or UUID"
-                  className="w-full rounded-2xl border border-white/6 bg-slate-900/80 px-4 py-3 text-slate-100 outline-none transition focus:border-amber-300 focus:shadow-[0_0_0_4px_rgba(251,191,36,0.12)]"
-                />
-                <button
-                  type="button"
-                  onClick={() => void saveManualCode()}
-                  disabled={manualScanBusy}
-                  className="rounded-2xl bg-amber-400 px-4 py-3 font-semibold text-slate-950 transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {manualScanBusy ? "Saving..." : "Use"}
-                </button>
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-slate-200">
-              <p className="font-semibold text-amber-200">What happens on scan</p>
-              <p className="mt-2 leading-relaxed">The modal shows conference, attendee name, ministry, and church at the top. Every lookup and action is written to the scan log with your committee name.</p>
-            </div>
-          </div>
-
-          {error ? <p className="mt-4 rounded-2xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-200">{error}</p> : null}
-        </section>
-
-        {/* tables are shown in a modal only; removed right-side quick panel for a cleaner scanner-first UI */}
-      </div>
+  function toggleBulkAttendeeSelection(attendeeId: string) {
+    if (!bulkModal) return;
+    const updated = bulkModal.attendees.map((att) =>
+      att.id === attendeeId ? { ...att, selected: !att.selected } : att
     );
+    setBulkModal({ ...bulkModal, attendees: updated });
   }
 
-  function renderTableModal() {
-    if (!showTableModal) return null;
-
-    return (
-      <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-950/75 px-4 py-8 backdrop-blur-sm">
-        <div className="w-full max-w-5xl rounded-2xl border border-white/10 bg-slate-900/95 p-6 shadow-lg">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="text-2xl font-black text-white">{tableTitle}</h3>
-              <p className="text-sm text-slate-400">{tableRows.length} record{tableRows.length === 1 ? "" : "s"}</p>
-            </div>
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => {
-                  setShowTableModal(false);
-                  setTableView("scanner");
-                  void startScanner();
-                }}
-                className="rounded-2xl bg-white/6 px-4 py-2 font-semibold text-white"
-              >
-                Close
-              </button>
-            </div>
-          </div>
-
-          <div className="mt-4 rounded-2xl border border-white/10 bg-slate-900/80 p-3">
-            {tableLoading ? (
-              <p className="text-sm text-slate-300">Loading {tableTitle.toLowerCase()}...</p>
-            ) : tableError ? (
-              <p className="rounded-2xl border border-rose-400/20 bg-rose-500/10 p-3 text-sm text-rose-200">{tableError}</p>
-            ) : (
-              <div className="space-y-3">
-                <div className="max-h-[64vh] overflow-auto">
-                  <div className="overflow-auto rounded-2xl border border-white/10 bg-slate-900/80">
-                    <table className="w-full border-collapse text-left text-sm text-slate-100">
-                      <thead className="sticky top-0 bg-slate-950 text-amber-200">
-                        <tr>
-                          <th className="px-4 py-3">Name</th>
-                          <th className="px-4 py-3">Ministry</th>
-                          <th className="px-4 py-3">Church</th>
-                          {tableView === "log" ? <th className="px-4 py-3">Committee</th> : null}
-                          {tableView === "log" ? <th className="px-4 py-3">Action</th> : null}
-                          {tableView === "log" ? <th className="px-4 py-3">Conference</th> : null}
-                          {tableView === "log" ? <th className="px-4 py-3">Time</th> : null}
-                          {tableView !== "log" ? <th className="px-4 py-3">Status</th> : null}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {tableRows.length ? tableRows.map((row) => (
-                          <tr key={`${row.id}-${row.actionType ?? row.scannedAt ?? row.checkedInAt ?? row.lunchAt ?? row.fullName}`} className="border-t border-white/5">
-                            <td className="px-4 py-3 font-semibold text-white">{row.fullName}</td>
-                            <td className="px-4 py-3">{row.ministry || "-"}</td>
-                            <td className="px-4 py-3">{row.church || "-"}</td>
-                            {tableView === "log" ? <td className="px-4 py-3">{row.committeeName || "-"}</td> : null}
-                            {tableView === "log" ? <td className="px-4 py-3 uppercase tracking-[0.18em] text-amber-200">{row.actionType || "-"}</td> : null}
-                            {tableView === "log" ? <td className="px-4 py-3 text-slate-300">{row.conference || "-"}</td> : null}
-                            {tableView === "log" ? <td className="px-4 py-3 text-slate-300">{row.scannedAt || "-"}</td> : null}
-                            {tableView !== "log" ? <td className="px-4 py-3 text-emerald-300">{tableView === "checkin" ? (row.checkedInAt ? `Checked in ${row.checkedInAt}` : "Checked in") : row.lunchAt ? `Lunch ${row.lunchAt}` : "Lunch marked"}</td> : null}
-                          </tr>
-                        )) : (
-                          <tr>
-                            <td className="px-4 py-6 text-slate-400" colSpan={tableView === "log" ? 6 : 4}>
-                              No records found.
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    );
+  function selectAllBulkAttendees() {
+    if (!bulkModal) return;
+    setBulkModal({
+      ...bulkModal,
+      attendees: bulkModal.attendees.map((att) => ({ ...att, selected: true })),
+    });
   }
 
-  function renderModal() {
-    if (!modal) return null;
+  function deselectAllBulkAttendees() {
+    if (!bulkModal) return;
+    setBulkModal({
+      ...bulkModal,
+      attendees: bulkModal.attendees.map((att) => ({ ...att, selected: false })),
+    });
+  }
 
-    return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 px-4 py-8 backdrop-blur-sm">
-        <div className="w-full max-w-lg rounded-[2rem] border border-white/10 bg-gradient-to-b from-white to-slate-100 p-6 text-slate-950 shadow-[0_24px_80px_rgba(0,0,0,0.45)] sm:p-8">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <p className="text-xs font-bold uppercase tracking-[0.32em] text-amber-700">{modal.conference}</p>
-              <h2 className="mt-2 text-3xl font-black tracking-tight text-slate-950">{modal.fullName}</h2>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setModal(null);
-                if (tableView === "scanner") void startScanner();
-              }}
-              className="rounded-full bg-slate-200 px-4 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-300"
-            >
-              Close
-            </button>
-          </div>
+  async function processBulkPayment() {
+    if (!bulkModal) return;
 
-          <div className="mt-5 grid gap-3 sm:grid-cols-2">
-            <div className="rounded-2xl bg-slate-950 px-4 py-3 text-white">
-              <p className="text-[0.65rem] uppercase tracking-[0.28em] text-amber-300">Fullname of the Attendee</p>
-              <p className="mt-1 text-lg font-black">{modal.fullName}</p>
-            </div>
-            <div className="rounded-2xl bg-slate-950 px-4 py-3 text-white">
-              <p className="text-[0.65rem] uppercase tracking-[0.28em] text-amber-300">Ministry</p>
-              <p className="mt-1 text-lg font-black">{modal.ministry || "-"}</p>
-            </div>
-            <div className="rounded-2xl bg-slate-950 px-4 py-3 text-white sm:col-span-2">
-              <p className="text-[0.65rem] uppercase tracking-[0.28em] text-amber-300">Church</p>
-              <p className="mt-1 text-lg font-black">{modal.church || "-"}</p>
-            </div>
-          </div>
+    const selectedAttendees = bulkModal.attendees.filter((att) => att.selected);
+    if (selectedAttendees.length === 0) {
+      setError("Please select at least one attendee.");
+      return;
+    }
 
-          <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-            <p className="font-semibold text-slate-900">{modal.conference}</p>
-            <p className="mt-1">Confirmed through committee login and written to the scan log.</p>
-          </div>
+    setBulkPaymentProcessing(true);
+    setError("");
 
-          <div className="mt-6 flex flex-wrap gap-3">
-            {!modal.checkedIn ? (
-              <button onClick={() => void doAction("checkin")} className="rounded-full bg-emerald-500 px-5 py-3 font-black text-white transition hover:brightness-105">
-                Check In
-              </button>
-            ) : null}
-            <button onClick={() => void doAction("lunch")} className="rounded-full bg-amber-400 px-5 py-3 font-black text-slate-950 transition hover:brightness-105">
-              Lunch
-            </button>
-            <button
-              onClick={() => {
-                setModal(null);
-                if (tableView === "scanner") void startScanner();
-              }}
-              className="rounded-full bg-slate-700 px-5 py-3 font-black text-white transition hover:bg-slate-800"
-            >
-              Return to Scanner
-            </button>
-          </div>
-        </div>
-      </div>
-    );
+    try {
+      const res = await fetch("/api/qr/payment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          attendeeIds: selectedAttendees.map((att) => att.id),
+          attendeeNames: selectedAttendees.map((att) => att.name),
+          committeeName,
+          conferenceLabel: bulkModal.conference,
+        }),
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setError(body.message ?? "Unable to process payments.");
+        return;
+      }
+
+      const body = await res.json();
+      if (body.data && body.data.successful.length > 0) {
+        const paidIds = new Set(body.data.successful.map((p: any) => p.attendeeId));
+        const updated = bulkModal.attendees.map((att) =>
+          paidIds.has(att.id) ? { ...att, selected: false } : att
+        );
+        setBulkModal({ ...bulkModal, attendees: updated });
+        setError(`Successfully processed ${body.data.successful.length} payment(s).`);
+      }
+    } catch (err) {
+      setError("Unable to process bulk payments.");
+    } finally {
+      setBulkPaymentProcessing(false);
+    }
   }
 
   function handleLogin(e: React.FormEvent) {
@@ -761,39 +790,718 @@ export default function QRReaderPage() {
     setError("");
   }
 
-  return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top,rgba(245,158,11,0.18),transparent_28%),radial-gradient(circle_at_85%_15%,rgba(59,130,246,0.16),transparent_26%),linear-gradient(135deg,#07111f_0%,#0b1628_55%,#13263f_100%)] px-4 py-6 text-white sm:px-6 lg:px-8 lg:py-8">
-      {!loginReady ? null : !isAuthenticated ? renderLogin() : (
-        <div className="mx-auto max-w-7xl">
-          <header className="mb-6 flex flex-col gap-3 rounded-[2rem] border border-white/10 bg-white/5 px-5 py-4 shadow-[0_16px_60px_rgba(0,0,0,0.2)] backdrop-blur-xl sm:flex-row sm:items-center sm:justify-between sm:px-6">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.32em] text-amber-300/80">QR Reader</p>
-              <h1 className="mt-1 text-3xl font-black tracking-tight text-white">Committee scanning console</h1>
-            </div>
-            <div className="text-sm text-slate-300">
-              Logged in as <span className="font-bold text-white">{committeeName}</span>
-            </div>
-          </header>
+  const performSearch = async (query: string) => {
+    if (!query.trim()) {
+      setSearchResults([]);
+      setIsSearching(false);
+      return;
+    }
 
-          {renderScannerContent()}
-          {renderModal()}
-          {renderTableModal()}
+    setIsSearching(true);
+    try {
+      const res = await fetch("/api/qr/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: query.trim() }),
+      });
 
-          {/* mobile floating button to quickly reopen scanner */}
-          {(tableView !== "scanner" || showTableModal) ? (
-            <button
-              onClick={() => {
-                setTableView("scanner");
-                setShowTableModal(false);
-                void startScanner();
-              }}
-              className="fixed bottom-6 right-4 z-50 rounded-full bg-amber-400 px-4 py-3 font-black text-slate-950 shadow-lg lg:hidden"
-            >
-              Open Scanner
-            </button>
-          ) : null}
+      if (!res.ok) {
+        setSearchResults([]);
+        setIsSearching(false);
+        return;
+      }
+
+      const body = await res.json();
+      if (body.data && Array.isArray(body.data)) {
+        setSearchResults(
+          body.data.map((att: any) => ({
+            id: att.id,
+            fullName: att.full_name,
+            church: att.church,
+            ministry: att.ministry,
+            paymentStatus: att.payment_status || "pending",
+            lunchClaimed: !!att.lunch_claimed,
+          })),
+        );
+      } else {
+        setSearchResults([]);
+      }
+    } catch (error) {
+      setSearchResults([]);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  function debounceSearch(query: string) {
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+
+    if (!query.trim()) {
+      setSearchResults([]);
+      return;
+    }
+
+    searchTimeoutRef.current = setTimeout(() => {
+      performSearch(query);
+    }, 300);
+  }
+
+  function handleUserSelect(userId: string) {
+    setUserSearch("");
+    setSearchResults([]);
+    handleQRScan(userId);
+  }
+
+  function logout() {
+    if (cameraActive) {
+      stopCamera();
+    }
+    setIsAuthenticated(false);
+    setManualCode("");
+    setModal(null);
+    setBulkModal(null);
+    setWalkInOpen(false);
+    setWalkInFullName("");
+    setWalkInChurch("");
+    setPaidAttendees([]);
+    setSearchResults([]);
+  }
+
+  if (!loginReady) return null;
+
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-900 via-blue-800 to-indigo-900 flex items-center justify-center px-4 py-8">
+        <div className="w-full max-w-md">
+          <div className="bg-white rounded-3xl shadow-2xl p-8">
+            <div className="text-center mb-8">
+              <h1 className="text-4xl font-black text-blue-900 mb-2">QR Reader</h1>
+              <p className="text-gray-600">Committee Login</p>
+            </div>
+
+            <form onSubmit={handleLogin} className="space-y-5">
+              <div>
+                <label className="block text-sm font-bold text-gray-800 mb-2">Committee Name</label>
+                <select
+                  value={committeeName}
+                  onChange={(e) => setCommitteeName(e.target.value as typeof committeeNames[number])}
+                  className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:outline-none focus:border-blue-500 font-semibold"
+                  required
+                >
+                  <option value="">Select committee</option>
+                  {committeeNames.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-bold text-gray-800 mb-2">Password</label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:outline-none focus:border-blue-500 font-semibold"
+                  required
+                />
+              </div>
+
+              <label className="flex items-center gap-3 text-gray-700 font-semibold">
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  className="w-5 h-5 accent-blue-600"
+                />
+                Remember me
+              </label>
+
+              {error && (
+                <div className="p-3 bg-red-100 border border-red-300 text-red-700 rounded-xl text-sm font-semibold">
+                  {error}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-black py-3 rounded-xl hover:shadow-lg transition"
+              >
+                Login
+              </button>
+            </form>
+          </div>
         </div>
-      )}
+      </div>
+    );
+  }
+
+  return (
+    <main className="min-h-screen bg-gradient-to-br from-slate-950 via-blue-950 to-slate-900 px-4 py-6">
+      <div className="max-w-2xl mx-auto">
+        {/* Header */}
+        <div className="mb-8 text-center">
+          <p className="text-blue-400 font-bold text-sm tracking-widest uppercase">QR Payment Scanner</p>
+          <h1 className="text-4xl font-black text-white mt-2">Payment Collection</h1>
+          <p className="text-blue-200 mt-2">Logged in as <span className="font-bold text-blue-100">{committeeName}</span></p>
+          <div className="mt-4 flex gap-2 justify-center">
+            <button
+              onClick={() => setWalkInOpen(true)}
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold"
+            >
+              Walk-in Registration
+            </button>
+            <a href="/qrreader/lunch" className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold">Lunch</a>
+            <a href="/qrreader/kit" className="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg font-bold">Kit</a>
+          </div>
+        </div>
+
+        <div className="bg-gradient-to-br from-slate-900 to-slate-800 rounded-2xl border border-blue-500/30 p-8 mb-8">
+          <label className="block text-center mb-4">
+            <p className="text-blue-300 font-bold text-sm uppercase tracking-wider mb-3">Scan QR or Paste ID</p>
+            <input
+              ref={scanInputRef}
+              type="text"
+              value={manualCode}
+              onChange={(e) => setManualCode(e.target.value)}
+              placeholder="Scan USB QR code or paste ID..."
+              className="w-full px-6 py-4 bg-slate-950 border-2 border-blue-500/50 text-white text-lg font-semibold rounded-xl placeholder-slate-500 focus:outline-none focus:border-blue-400 text-center"
+            />
+          </label>
+
+          <div className="mb-6 relative">
+            <label className="block text-center mb-3">
+              <p className="text-blue-300 font-bold text-sm uppercase tracking-wider mb-3">Or Search for User</p>
+              <input
+                type="text"
+                value={userSearch}
+                onChange={(e) => {
+                  setUserSearch(e.target.value);
+                  debounceSearch(e.target.value);
+                }}
+                placeholder="Type attendee name..."
+                className="w-full px-6 py-4 bg-slate-950 border-2 border-blue-500/50 text-white text-lg font-semibold rounded-xl placeholder-slate-500 focus:outline-none focus:border-blue-400 text-center"
+              />
+            </label>
+
+            {userSearch.length > 0 && (
+              <div className="absolute top-full left-0 right-0 mt-2 z-40">
+                {isSearching && <div className="bg-slate-950 border border-blue-500/50 rounded-lg p-4 text-center text-blue-200">Searching...</div>}
+
+                {!isSearching && searchResults.length > 0 && (
+                  <div className="bg-slate-950 border border-blue-500/50 rounded-lg overflow-hidden max-h-80 overflow-y-auto shadow-lg">
+                    {searchResults.map((result) => (
+                      <button
+                        key={result.id}
+                        onClick={() => handleUserSelect(result.id)}
+                        className={`w-full px-4 py-3 text-left hover:bg-blue-600/30 transition border-b border-slate-800 last:border-0 flex items-start justify-between ${
+                          result.paymentStatus === "paid" ? "bg-green-900/20" : ""
+                        }`}
+                      >
+                        <div>
+                          <p className="text-white font-bold">{result.fullName}</p>
+                          {(result.ministry || result.church) && (
+                            <p className="text-blue-300 text-xs mt-1">
+                              {result.ministry && <span>{result.ministry}</span>}
+                              {result.ministry && result.church && <span> • </span>}
+                              {result.church && <span>{result.church}</span>}
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex flex-col items-end gap-2 ml-2">
+                          {result.paymentStatus === "paid" ? (
+                            <span className="bg-green-600/40 border border-green-500 text-green-300 text-xs font-bold px-2 py-1 rounded whitespace-nowrap">
+                              ✓ PAID
+                            </span>
+                          ) : (
+                            <span className="bg-orange-600/40 border border-orange-500 text-orange-300 text-xs font-bold px-2 py-1 rounded whitespace-nowrap">
+                              PENDING
+                            </span>
+                          )}
+                          {result.lunchClaimed ? (
+                            <span className="bg-emerald-600/40 border border-emerald-500 text-emerald-300 text-xs font-bold px-2 py-1 rounded whitespace-nowrap">
+                              LUNCH CLAIMED
+                            </span>
+                          ) : (
+                            <span className="bg-slate-700/60 border border-slate-500 text-slate-300 text-xs font-bold px-2 py-1 rounded whitespace-nowrap">
+                              LUNCH NOT CLAIMED
+                            </span>
+                          )}
+                          <div className="text-blue-400 text-lg">→</div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {!isSearching && searchResults.length === 0 && userSearch.length > 0 && (
+                  <div className="bg-slate-950 border border-slate-700 rounded-lg p-4 text-center text-gray-400 text-sm">
+                    No attendees found - try another name
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Scan Animation */}
+        {showScanAnimation && (
+          <>
+            <div className="fixed inset-0 pointer-events-none z-40">
+              <div className="absolute inset-0 bg-gradient-to-r from-green-500/0 via-green-500/30 to-green-500/0 animate-pulse"></div>
+            </div>
+          </>
+        )}
+
+        {processingAttendeeId && (
+          <div className="mt-6 text-center">
+            <div className="inline-flex items-center gap-3">
+              <div className="w-6 h-6 border-3 border-blue-500 border-t-green-400 rounded-full animate-spin"></div>
+              <span className="text-blue-300 font-semibold">Reading QR...</span>
+            </div>
+          </div>
+        )}
+
+        {error && (
+          <div className="mt-6 p-4 bg-red-900/30 border border-red-500/50 text-red-300 rounded-xl text-sm font-semibold text-center">
+            {error}
+          </div>
+        )}
+
+        {/* Camera Toggle Button */}
+        <div className="mt-6 flex gap-3 justify-center">
+          <button
+            onClick={() => {
+              if (cameraActive) {
+                stopCamera();
+              } else {
+                startCamera();
+              }
+            }}
+            className={`px-6 py-3 font-bold rounded-xl transition ${
+              cameraActive
+                ? "bg-red-600 hover:bg-red-700 text-white"
+                : "bg-blue-600 hover:bg-blue-700 text-white"
+            }`}
+          >
+            {cameraActive ? "Stop Camera" : "Use Back Camera"}
+          </button>
+        </div>
+        </div>
+
+        {/* Camera Modal */}
+        {cameraActive && (
+          <div className="fixed inset-0 bg-black/95 flex items-center justify-center p-4 z-50">
+            <div className="w-full max-w-2xl">
+              <div className="bg-gradient-to-br from-slate-900 to-slate-800 rounded-3xl border-2 border-blue-500/50 overflow-hidden shadow-2xl">
+                {/* Camera Header */}
+                <div className="bg-gradient-to-r from-blue-600 to-indigo-600 px-6 py-4">
+                  <h3 className="text-white font-black text-lg">📷 Camera Scanner</h3>
+                </div>
+
+                {/* Camera View */}
+                <div className="relative bg-black">
+                  <div className="aspect-video rounded-lg overflow-hidden mx-4 mt-4 border-2 border-blue-500/30">
+                    <video
+                      ref={videoRef}
+                      autoPlay
+                      playsInline
+                      className="w-full h-full object-cover"
+                    />
+                    <canvas ref={canvasRef} className="hidden" />
+
+                    {/* Scanning Frame Overlay */}
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                      <div className="absolute w-56 h-56 border-4 border-green-400 rounded-lg opacity-60 animate-pulse" />
+                      
+                      {/* Corner Markers */}
+                      <div className="absolute inset-0">
+                        <div className="absolute top-20 left-20 w-8 h-8 border-t-4 border-l-4 border-green-400" />
+                        <div className="absolute top-20 right-20 w-8 h-8 border-t-4 border-r-4 border-green-400" />
+                        <div className="absolute bottom-20 left-20 w-8 h-8 border-b-4 border-l-4 border-green-400" />
+                        <div className="absolute bottom-20 right-20 w-8 h-8 border-b-4 border-r-4 border-green-400" />
+                      </div>
+
+                      {/* Center Crosshair */}
+                      <div className="w-1 h-20 bg-green-400 opacity-50 mx-1" />
+                      <div className="w-20 h-1 bg-green-400 opacity-50" />
+                    </div>
+                  </div>
+
+                  {/* Scanning Status */}
+                  <div className="text-center py-4">
+                    <div className="inline-flex items-center gap-2">
+                      <div className="w-3 h-3 bg-green-400 rounded-full animate-pulse"></div>
+                      <span className="text-green-400 font-bold text-sm uppercase tracking-wider">Scanning...</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Controls */}
+                <div className="p-6 space-y-3 bg-slate-900/50">
+                  <p className="text-center text-blue-300 font-bold text-sm uppercase tracking-wider">
+                    Point camera at QR code to scan
+                  </p>
+                  <button
+                    onClick={stopCamera}
+                    className="w-full px-4 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition"
+                  >
+                    Close Camera
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Paid Attendees Table */}
+        {paidAttendees.length > 0 && (
+          <div className="bg-gradient-to-br from-slate-900 to-slate-800 rounded-2xl border border-green-500/30 p-8 mb-8">
+            <div className="mb-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-2xl font-black text-white">Payments Collected</h2>
+                <div className="bg-green-600/20 border border-green-500/50 px-4 py-2 rounded-lg">
+                  <p className="text-green-300 font-black text-lg">{paidAttendees.length} Paid</p>
+                </div>
+              </div>
+              <div className="text-sm text-gray-400">
+                Total: <span className="text-green-300 font-black text-lg">{paidAttendees.length * 200} PHP</span>
+              </div>
+            </div>
+
+            <div className="mb-6">
+              <label className="block text-sm font-bold text-blue-300 mb-2">Search payments</label>
+              <input
+                type="text"
+                value={paidSearch}
+                onChange={(e) => setPaidSearch(e.target.value)}
+                placeholder="Search by name, committee, amount, or time..."
+                className="w-full px-4 py-3 bg-slate-950 border-2 border-blue-500/40 text-white rounded-xl placeholder-slate-500 focus:outline-none focus:border-blue-400"
+              />
+            </div>
+
+            {/* Table */}
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="border-b border-blue-500/30 bg-slate-950/50">
+                  <tr>
+                    <th className="px-4 py-3 font-bold text-blue-300">No.</th>
+                    <th className="px-4 py-3 font-bold text-blue-300">Name</th>
+                    <th className="px-4 py-3 font-bold text-blue-300">Amount</th>
+                    <th className="px-4 py-3 font-bold text-blue-300">Payment By</th>
+                    <th className="px-4 py-3 font-bold text-blue-300">Time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredPaidAttendees.length > 0 ? (
+                    filteredPaidAttendees.map((attendee, index) => (
+                      <tr key={attendee.attendeeId} className="border-b border-slate-700 hover:bg-slate-950/50 transition">
+                        <td className="px-4 py-3 text-white font-semibold">{index + 1}</td>
+                        <td className="px-4 py-3 text-white font-semibold">{attendee.name}</td>
+                        <td className="px-4 py-3 text-green-300 font-black">{attendee.amount} PHP</td>
+                        <td className="px-4 py-3 text-blue-300">{attendee.paidByCommittee}</td>
+                        <td className="px-4 py-3 text-gray-400 text-xs">{new Date(attendee.paidAt).toLocaleTimeString()}</td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={5} className="px-4 py-6 text-center text-gray-400">
+                        No paid attendees match your search.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+        <div className="text-center">
+          <button
+            onClick={logout}
+            className="px-6 py-2 bg-red-600/80 hover:bg-red-700 text-white font-bold rounded-lg transition"
+          >
+            Logout
+          </button>
+        </div>
+
+        {/* Single Attendee Modal */}
+        {modal && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+            <div className="bg-gradient-to-br from-slate-900 to-slate-800 rounded-3xl border border-blue-500/30 p-8 max-w-md w-full shadow-2xl">
+              {/* Conference Badge */}
+              <div className="text-center mb-6">
+                <div className="inline-block bg-blue-600/20 border border-blue-500/50 px-4 py-1 rounded-full">
+                  <p className="text-blue-300 text-xs font-bold uppercase tracking-wider">{modal.conference}</p>
+                </div>
+              </div>
+
+              {/* Animated Name Display */}
+              <div className="mb-8 animate-fadeIn">
+                <p className="text-4xl font-black text-white text-center">{modal.fullName}</p>
+              </div>
+
+              {/* Details */}
+              <div className="space-y-3 mb-8">
+                <div className="bg-slate-950/50 rounded-lg p-3">
+                  <p className="text-xs text-gray-400 uppercase tracking-wider font-bold mb-1">Ministry</p>
+                  <p className="text-white font-semibold">{modal.ministry || "-"}</p>
+                </div>
+                <div className="bg-slate-950/50 rounded-lg p-3">
+                  <p className="text-xs text-gray-400 uppercase tracking-wider font-bold mb-1">Church</p>
+                  <p className="text-white font-semibold">{modal.church || "-"}</p>
+                </div>
+              </div>
+
+              {/* Payment Section */}
+              <div className={`rounded-lg p-4 mb-6 text-center ${
+                modal.paymentStatus === "paid"
+                  ? "bg-green-600/20 border border-green-500/50"
+                  : "bg-orange-600/20 border border-orange-500/50"
+              }`}>
+                <p className="text-xs font-bold uppercase tracking-wider mb-2 text-gray-300">Payment</p>
+                <p className="text-3xl font-black text-white mb-2">{modal.paymentAmount} PHP</p>
+                <p className={`text-sm font-bold uppercase tracking-wider ${
+                  modal.paymentStatus === "paid" ? "text-green-300" : "text-orange-300"
+                }`}>
+                  {modal.paymentStatus === "paid" ? "✓ PAID" : "PENDING"}
+                </p>
+                {modal.paymentStatus === "paid" && modal.paidByCommittee && (
+                  <>
+                    <p className="text-xs text-gray-300 mt-2">By {modal.paidByCommittee}</p>
+                    {modal.paidAt && <p className="text-xs text-gray-300">{new Date(modal.paidAt).toLocaleTimeString()}</p>}
+                  </>
+                )}
+                {modal.checkedIn && (
+                  <p className="text-xs text-green-300 mt-2 font-bold">✓ AUTO CHECKED IN</p>
+                )}
+                <p className={`text-xs mt-2 font-bold ${modal.lunch ? "text-emerald-300" : "text-slate-300"}`}>
+                  {modal.lunch ? "✓ LUNCH CLAIMED" : "LUNCH NOT CLAIMED"}
+                </p>
+              </div>
+              {/* Action Buttons */}
+              <div className="space-y-3">
+                {modal.paymentStatus !== "paid" ? (
+                  <button
+                    onClick={confirmPayment}
+                    disabled={paymentProcessing}
+                    className="w-full bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 disabled:opacity-60 text-white font-black py-4 rounded-xl transition text-lg"
+                  >
+                    {paymentProcessing ? "Processing..." : "CONFIRM PAYMENT"}
+                  </button>
+                ) : (
+                  <div className="bg-green-600/20 border border-green-500/50 rounded-xl py-4 text-center">
+                    <p className="text-green-300 font-black text-lg">✓ PAYMENT CONFIRMED</p>
+                  </div>
+                )}
+
+                <button
+                  onClick={() => {
+                    setModal(null);
+                    setManualCode("");
+                    if (scanInputRef.current) scanInputRef.current.focus();
+                  }}
+                  className="w-full bg-slate-700 hover:bg-slate-600 text-white font-bold py-3 rounded-xl transition"
+                >
+                  {modal.paymentStatus === "paid" ? "NEXT GUEST" : "CANCEL"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Walk-in Registration Modal */}
+        {walkInOpen && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+            <div className="bg-gradient-to-br from-slate-900 to-slate-800 rounded-3xl border border-emerald-500/30 p-8 max-w-md w-full shadow-2xl">
+              <div className="text-center mb-6">
+                <p className="text-emerald-300 text-xs font-bold uppercase tracking-wider">Walk-in Registration</p>
+                <h2 className="text-3xl font-black text-white mt-2">Add Attendee</h2>
+                <p className="text-slate-300 text-sm mt-2">This will be saved to Supabase and appear in QR search.</p>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-bold text-emerald-200 mb-2">Full Name</label>
+                  <input
+                    type="text"
+                    value={walkInFullName}
+                    onChange={(e) => setWalkInFullName(e.target.value)}
+                    placeholder="Enter full name"
+                    className="w-full px-4 py-3 bg-slate-950 border-2 border-emerald-500/50 text-white rounded-xl placeholder-slate-500 focus:outline-none focus:border-emerald-400"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-bold text-emerald-200 mb-2">Church</label>
+                  <input
+                    type="text"
+                    value={walkInChurch}
+                    onChange={(e) => setWalkInChurch(e.target.value)}
+                    placeholder="Enter church name"
+                    className="w-full px-4 py-3 bg-slate-950 border-2 border-emerald-500/50 text-white rounded-xl placeholder-slate-500 focus:outline-none focus:border-emerald-400"
+                  />
+                </div>
+
+                <p className="text-xs text-slate-300">
+                  Conference defaults to Leyte for walk-in registrations.
+                </p>
+
+                {error && (
+                  <div className="p-3 bg-red-900/30 border border-red-500/50 text-red-300 rounded-xl text-sm font-semibold">
+                    {error}
+                  </div>
+                )}
+
+                <div className="space-y-3">
+                  <button
+                    onClick={submitWalkInRegistration}
+                    disabled={walkInSaving}
+                    className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 disabled:opacity-60 text-white font-black py-4 rounded-xl transition text-lg"
+                  >
+                    {walkInSaving ? "Registering..." : "REGISTER WALK-IN"}
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setWalkInOpen(false);
+                      setWalkInFullName("");
+                      setWalkInChurch("");
+                    }}
+                    className="w-full bg-slate-700 hover:bg-slate-600 text-white font-bold py-3 rounded-xl transition"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Bulk Modal */}
+        {bulkModal && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 overflow-auto">
+            <div className="bg-gradient-to-br from-slate-900 to-slate-800 rounded-3xl border border-blue-500/30 p-8 max-w-2xl w-full shadow-2xl my-8">
+              <div className="text-center mb-8">
+                <div className="inline-block bg-blue-600/20 border border-blue-500/50 px-4 py-1 rounded-full mb-4">
+                  <p className="text-blue-300 text-xs font-bold uppercase tracking-wider">{bulkModal.conference}</p>
+                </div>
+                <h2 className="text-3xl font-black text-white">BULK PAYMENT</h2>
+                {bulkModal.contactPerson && (
+                  <p className="text-gray-400 mt-2">
+                    Contact: <span className="text-blue-300 font-bold">{bulkModal.contactPerson}</span>
+                  </p>
+                )}
+              </div>
+
+              {/* Selection Controls */}
+              <div className="flex gap-2 justify-center mb-6">
+                <button
+                  onClick={selectAllBulkAttendees}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-sm transition"
+                >
+                  Select All
+                </button>
+                <button
+                  onClick={deselectAllBulkAttendees}
+                  className="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-white font-bold rounded-lg text-sm transition"
+                >
+                  Clear All
+                </button>
+              </div>
+
+              {/* Attendee List */}
+              <div className="max-h-96 overflow-auto mb-6 space-y-2">
+                {bulkModal.attendees.map((att) => (
+                  <div
+                    key={att.id}
+                    onClick={() => toggleBulkAttendeeSelection(att.id)}
+                    className={`cursor-pointer p-4 rounded-lg border-2 transition ${
+                      att.selected
+                        ? "bg-blue-600/30 border-blue-500"
+                        : "bg-slate-950/50 border-slate-700 hover:border-slate-600"
+                    }`}
+                  >
+                    <div className="flex items-center gap-4">
+                      <input
+                        type="checkbox"
+                        checked={att.selected || false}
+                        onChange={() => {}}
+                        className="w-5 h-5"
+                      />
+                      <div className="flex-1">
+                        <p className="font-bold text-white">{att.name}</p>
+                        <div className="text-xs text-gray-400 mt-1 space-y-0.5">
+                          {att.ministry && <p>{att.ministry}</p>}
+                          {att.church && <p>{att.church}</p>}
+                        </div>
+                      </div>
+                      <p className="text-right">
+                        <p className="text-xl font-black text-blue-300">200</p>
+                        <p className="text-xs text-gray-400">PHP</p>
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Total */}
+              {bulkModal.attendees.filter((a) => a.selected).length > 0 && (
+                <div className="bg-green-600/20 border border-green-500/50 rounded-lg p-4 mb-6 text-center">
+                  <p className="text-sm text-gray-300 mb-1">TOTAL</p>
+                  <p className="text-3xl font-black text-white">
+                    {bulkModal.attendees.filter((a) => a.selected).length * 200} PHP
+                  </p>
+                </div>
+              )}
+
+              {error && (
+                <div className="p-3 bg-red-900/30 border border-red-500/50 text-red-300 rounded-lg text-sm font-semibold mb-6 text-center">
+                  {error}
+                </div>
+              )}
+
+              {/* Buttons */}
+              <div className="space-y-3">
+                <button
+                  onClick={processBulkPayment}
+                  disabled={bulkPaymentProcessing || bulkModal.attendees.filter((a) => a.selected).length === 0}
+                  className="w-full bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 disabled:opacity-60 text-white font-black py-4 rounded-xl transition text-lg"
+                >
+                  {bulkPaymentProcessing ? "Processing..." : "CONFIRM BULK PAYMENT"}
+                </button>
+                <button
+                  onClick={() => {
+                    setBulkModal(null);
+                    setManualCode("");
+                    if (scanInputRef.current) scanInputRef.current.focus();
+                  }}
+                  className="w-full bg-slate-700 hover:bg-slate-600 text-white font-bold py-3 rounded-xl transition"
+                >
+                  CANCEL
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+      <style jsx>{`
+        @keyframes fadeIn {
+          from {
+            opacity: 0;
+            transform: scale(0.95);
+          }
+          to {
+            opacity: 1;
+            transform: scale(1);
+          }
+        }
+        .animate-fadeIn {
+          animation: fadeIn 0.5s ease-out;
+        }
+      `}</style>
     </main>
   );
 }

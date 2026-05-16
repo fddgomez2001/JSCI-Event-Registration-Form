@@ -96,6 +96,7 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({
+    attendeeId,
     fullName: attendee.full_name,
     church: attendee.church,
     ministry: attendee.ministry,
