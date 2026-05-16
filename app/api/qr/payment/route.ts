@@ -22,9 +22,11 @@ type PaymentResponse = {
   id: string;
   attendeeId: string;
   amount: number;
+  paymentMethod: string;
   paymentStatus: string;
   paidAt: string | null;
   paidByCommittee: string | null;
+  notes?: string | null;
 };
 
 type BulkPaymentResponse = {
@@ -60,13 +62,47 @@ export async function GET(request: Request) {
   const attendeeId = url.searchParams.get("attendeeId");
 
   if (!attendeeId) {
-    return NextResponse.json({ success: false, message: "attendeeId is required" }, { status: 400 });
+      // If no attendeeId provided, return recent paid payments for dashboard
+      try {
+        const { data: listData, error: listError } = await supabase
+          .from("payments")
+          .select(
+            "id,attendee_id,attendee_name,amount,payment_method,payment_status,paid_at,paid_by_committee,notes"
+          )
+          .eq("payment_status", "paid")
+          .order("paid_at", { ascending: false })
+          .limit(200);
+
+        if (listError && listError.code !== "PGRST205") throw listError;
+
+        return NextResponse.json({
+          success: true,
+          data: Array.isArray(listData)
+            ? listData.map((d: any) => ({
+                id: d.id,
+                attendeeId: d.attendee_id,
+                attendeeName: d.attendee_name,
+                amount: d.amount,
+                paymentMethod: d.payment_method,
+                paymentStatus: d.payment_status,
+                paidAt: d.paid_at,
+                paidByCommittee: d.paid_by_committee,
+                notes: d.notes ?? null,
+              }))
+            : [],
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unable to fetch payments list.";
+        return NextResponse.json({ success: false, message }, { status: 500 });
+      }
   }
 
   try {
     const { data, error } = await supabase
       .from("payments")
-      .select("id,attendee_id,attendee_name,amount,payment_status,paid_at,paid_by_committee")
+      .select(
+        "id,attendee_id,attendee_name,amount,payment_method,payment_status,paid_at,paid_by_committee,notes"
+      )
       .eq("attendee_id", attendeeId)
       .maybeSingle();
 
@@ -81,10 +117,12 @@ export async function GET(request: Request) {
           id: data.id,
           attendeeId: data.attendee_id,
           amount: data.amount,
+          paymentMethod: data.payment_method,
           paymentStatus: data.payment_status,
           paidAt: data.paid_at,
           paidByCommittee: data.paid_by_committee,
-        } as PaymentResponse,
+          notes: data.notes ?? null,
+        },
       });
     }
 
@@ -128,7 +166,9 @@ async function processSinglePayment(
           updated_at: new Date().toISOString(),
         })
         .eq("id", existingPayment.id)
-        .select("id,attendee_id,attendee_name,amount,payment_status,paid_at,paid_by_committee")
+        .select(
+          "id,attendee_id,attendee_name,amount,payment_method,payment_status,paid_at,paid_by_committee,notes"
+        )
         .single();
 
       if (error) throw error;
@@ -139,7 +179,7 @@ async function processSinglePayment(
         .insert({
           attendee_id: attendeeId,
           attendee_name: attendeeName,
-          amount: 200.00,
+          amount: 200.0,
           currency: "PHP",
           payment_method: "cash",
           payment_status: "paid",
@@ -147,7 +187,9 @@ async function processSinglePayment(
           paid_by_committee: committeeName,
           conference: conference,
         })
-        .select("id,attendee_id,attendee_name,amount,payment_status,paid_at,paid_by_committee")
+        .select(
+          "id,attendee_id,attendee_name,amount,payment_method,payment_status,paid_at,paid_by_committee,notes"
+        )
         .single();
 
       if (error) throw error;
@@ -160,6 +202,7 @@ async function processSinglePayment(
         id: payment.id,
         attendeeId: payment.attendee_id,
         amount: payment.amount,
+        paymentMethod: payment.payment_method,
         paymentStatus: payment.payment_status,
         paidAt: payment.paid_at,
         paidByCommittee: payment.paid_by_committee,
@@ -171,6 +214,62 @@ async function processSinglePayment(
       success: false,
       error: errorMessage,
     };
+  }
+}
+
+export async function PATCH(request: Request) {
+  const supabase = getSupabaseAdmin();
+  if (!supabase) {
+    return NextResponse.json({ success: false, message: "Missing SUPABASE_SERVICE_ROLE_KEY" }, { status: 500 });
+  }
+
+  let body: { id?: string; attendeeId?: string; paymentMethod?: string; notes?: string };
+  try {
+    body = (await request.json()) as { id?: string; attendeeId?: string; paymentMethod?: string; notes?: string };
+  } catch {
+    return NextResponse.json({ success: false, message: "Invalid JSON" }, { status: 400 });
+  }
+
+  if (!body.id && !body.attendeeId) {
+    return NextResponse.json({ success: false, message: "id or attendeeId is required" }, { status: 400 });
+  }
+
+  const updates: any = {};
+  if (body.paymentMethod) updates.payment_method = body.paymentMethod;
+  if (typeof body.notes !== "undefined") updates.notes = body.notes;
+  updates.updated_at = new Date().toISOString();
+
+  try {
+    const query = supabase.from("payments").update(updates).select(
+      "id,attendee_id,attendee_name,amount,payment_method,payment_status,paid_at,paid_by_committee,notes"
+    );
+
+    if (body.id) query.eq("id", body.id);
+    else query.eq("attendee_id", body.attendeeId!);
+
+    const { data, error } = await query.maybeSingle();
+    if (error) throw error;
+
+    if (!data) {
+      return NextResponse.json({ success: false, message: "Payment not found" }, { status: 404 });
+    }
+
+    return NextResponse.json({
+      success: true,
+      data: {
+        id: data.id,
+        attendeeId: data.attendee_id,
+        amount: data.amount,
+        paymentMethod: data.payment_method,
+        paymentStatus: data.payment_status,
+        paidAt: data.paid_at,
+        paidByCommittee: data.paid_by_committee,
+        notes: data.notes ?? null,
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unable to update payment.";
+    return NextResponse.json({ success: false, message }, { status: 500 });
   }
 }
 
