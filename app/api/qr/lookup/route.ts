@@ -173,17 +173,19 @@ export async function POST(request: Request) {
   }
 
   if (committeeName) {
-    void supabase
-      .from("qr_scan_logs")
-      .insert({
-        attendee_id: attendeeId,
-        attendee_name: attendee.full_name,
-        committee_name: committeeName,
-        action_type: "lookup",
-        conference: attendee.conference,
-      })
-      .then(() => undefined)
-      .catch(() => undefined);
+    void (async () => {
+      try {
+        await supabase.from("qr_scan_logs").insert({
+          attendee_id: attendeeId,
+          attendee_name: attendee.full_name,
+          committee_name: committeeName,
+          action_type: "lookup",
+          conference: attendee.conference,
+        });
+      } catch {
+        // Ignore lookup log failures.
+      }
+    })();
   }
 
   return NextResponse.json({
