@@ -19,7 +19,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Missing SUPABASE_SERVICE_ROLE_KEY" }, { status: 500 });
   }
 
-  let body: { query?: string };
+  let body: { query?: string; includeLunch?: boolean };
   try {
     body = await request.json();
   } catch {
@@ -27,6 +27,7 @@ export async function POST(request: Request) {
   }
 
   const query = String(body.query ?? "").trim();
+  const includeLunch = body.includeLunch === true;
   if (!query || query.length < 1) {
     return NextResponse.json({
       success: true,
@@ -52,13 +53,17 @@ export async function POST(request: Request) {
         .select("attendee_id,payment_status")
         .in("attendee_id", attendeeIds);
 
-      const { data: lunchRows, error: lunchError } = await supabase
-        .from("attendee_checkins")
-        .select("attendee_id,lunch")
-        .in("attendee_id", attendeeIds);
+      let lunchRows: Array<{ attendee_id: string; lunch: boolean }> | null = null;
+      if (includeLunch) {
+        const lunchResult = await supabase
+          .from("attendee_checkins")
+          .select("attendee_id,lunch")
+          .in("attendee_id", attendeeIds);
 
-      if (lunchError && lunchError.code !== "42P01") {
-        throw lunchError;
+        if (lunchResult.error && lunchResult.error.code !== "42P01") {
+          throw lunchResult.error;
+        }
+        lunchRows = lunchResult.data as Array<{ attendee_id: string; lunch: boolean }> | null;
       }
 
       // Map payment and lunch status to attendees.

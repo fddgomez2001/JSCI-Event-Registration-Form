@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { createClient } from "@/utils/supabase/client";
 
 const sharedPassword = "JesusIsLord!";
 const committeeNames = [
@@ -13,6 +14,7 @@ const committeeNames = [
   "Josiah",
   "Julie",
   "Quennie",
+  "Qien",
 ] as const;
 const loginStorageKey = "qrreader-committee-login";
 
@@ -53,6 +55,58 @@ export default function KitPage() {
   const [searchResults, setSearchResults] = useState<Array<{ id: string; fullName: string; church?: string; ministry?: string; paymentStatus?: "paid" | "pending" }>>([]);
   const [isSearching, setIsSearching] = useState(false);
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const kitDisplayChannelRef = useRef<ReturnType<ReturnType<typeof createClient>["channel"]> | null>(null);
+  const kitDisplayReadyRef = useRef(false);
+  const pendingKitEventsRef = useRef<Array<{ event: "kit-scan" | "kit-claimed"; payload: { fullName: string; church: string; conference: string; source: "kit" } }>>([]);
+
+  const sendKitDisplayEvent = (event: "kit-scan" | "kit-claimed", payload: { fullName: string; church: string; conference: string }) => {
+    if (!kitDisplayReadyRef.current || !kitDisplayChannelRef.current) {
+      pendingKitEventsRef.current.push({
+        event,
+        payload: {
+          ...payload,
+          source: "kit",
+        },
+      });
+      return;
+    }
+
+    void kitDisplayChannelRef.current.send({
+      type: "broadcast",
+      event,
+      payload: {
+        ...payload,
+        source: "kit",
+      },
+    });
+  };
+
+  useEffect(() => {
+    const supabase = createClient();
+    const channel = supabase.channel("kitclaim-display").subscribe((status) => {
+      if (status === "SUBSCRIBED") {
+        kitDisplayReadyRef.current = true;
+
+        if (pendingKitEventsRef.current.length > 0) {
+          const queued = [...pendingKitEventsRef.current];
+          pendingKitEventsRef.current = [];
+          queued.forEach((queuedEvent) => {
+            void channel.send({
+              type: "broadcast",
+              event: queuedEvent.event,
+              payload: queuedEvent.payload,
+            });
+          });
+        }
+      }
+    });
+    kitDisplayChannelRef.current = channel;
+    return () => {
+      kitDisplayReadyRef.current = false;
+      pendingKitEventsRef.current = [];
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   useEffect(() => {
     setLoginReady(true);
@@ -198,6 +252,13 @@ export default function KitPage() {
         paymentStatus,
         kit: kitState,
       });
+
+      // Broadcast attendee name to kitclaim display only.
+      sendKitDisplayEvent("kit-scan", {
+        fullName: lookup.fullName,
+        church: lookup.church ?? "",
+        conference: lookup.conference,
+      });
     } catch {
       setError("Lookup failed. Please try again.");
     } finally {
@@ -270,21 +331,27 @@ export default function KitPage() {
         return;
       }
 
-      setModal((current) =>
-        current
-          ? {
-              ...current,
-              kit: {
-                toteBag: !!body.data.toteBag,
-                mug: !!body.data.mug,
-                notebook: !!body.data.notebook,
-                pencil: !!body.data.pencil,
-                claimedAt: body.data.claimedAt,
-                claimedByCommittee: body.data.claimedByCommittee,
-              },
-            }
-          : current,
-      );
+      setModal((current) => {
+        if (current) {
+          sendKitDisplayEvent("kit-claimed", {
+            fullName: current.fullName,
+            church: current.church,
+            conference: current.conference,
+          });
+          return {
+            ...current,
+            kit: {
+              toteBag: !!body.data.toteBag,
+              mug: !!body.data.mug,
+              notebook: !!body.data.notebook,
+              pencil: !!body.data.pencil,
+              claimedAt: body.data.claimedAt,
+              claimedByCommittee: body.data.claimedByCommittee,
+            },
+          };
+        }
+        return current;
+      });
     } catch {
       setError("Unable to save kit claim.");
     } finally {
@@ -363,143 +430,202 @@ export default function KitPage() {
 
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-cyan-900 via-blue-900 to-indigo-900 flex items-center justify-center px-4 py-8">
-        <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl p-8">
-          <div className="text-center mb-8">
-            <h1 className="text-4xl font-black text-cyan-900 mb-2">Kit Scanner</h1>
-            <p className="text-gray-600">Committee Login</p>
+      <div className="min-h-screen bg-gradient-to-br from-black via-orange-950 to-orange-900 flex items-center justify-center px-4 py-8">
+        <div className="w-full max-w-md">
+          <div className="flex justify-center mb-8">
+            <img src="/JSCI_CONFERENCE.png" alt="JSCI Conference" className="w-72 object-contain drop-shadow-2xl" />
           </div>
-
-          <form onSubmit={handleLogin} className="space-y-5">
-            <div>
-              <label className="block text-sm font-bold text-gray-800 mb-2">Committee Name</label>
-              <select
-                value={committeeName}
-                onChange={(e) => setCommitteeName(e.target.value as (typeof committeeNames)[number])}
-                className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:outline-none focus:border-cyan-500 font-semibold"
-                required
-              >
-                <option value="">Select committee</option>
-                {committeeNames.map((name) => (
-                  <option key={name} value={name}>{name}</option>
-                ))}
-              </select>
+          <div className="bg-black/60 border border-orange-500/40 backdrop-blur-sm rounded-3xl shadow-2xl p-8">
+            <div className="text-center mb-8">
+              <h1 className="text-4xl font-black text-white mb-2">Kit Scanner</h1>
+              <p className="text-orange-300 font-semibold tracking-wide">Committee Login</p>
             </div>
 
-            <div>
-              <label className="block text-sm font-bold text-gray-800 mb-2">Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-4 py-3 border-2 border-gray-300 rounded-xl focus:outline-none focus:border-cyan-500 font-semibold"
-                required
-              />
-            </div>
+            <form onSubmit={handleLogin} className="space-y-5">
+              <div>
+                <label className="block text-sm font-bold text-orange-200 mb-2">Committee Name</label>
+                <select
+                  value={committeeName}
+                  onChange={(e) => setCommitteeName(e.target.value as (typeof committeeNames)[number])}
+                  className="w-full px-4 py-3 bg-black/50 border-2 border-orange-500/50 rounded-xl focus:outline-none focus:border-orange-400 font-semibold text-white"
+                  required
+                >
+                  <option value="" className="bg-black">Select committee</option>
+                  {committeeNames.map((name) => (
+                    <option key={name} value={name} className="bg-black">{name}</option>
+                  ))}
+                </select>
+              </div>
 
-            <label className="flex items-center gap-3 text-gray-700 font-semibold">
-              <input type="checkbox" checked={rememberMe} onChange={(e) => setRememberMe(e.target.checked)} className="w-5 h-5 accent-cyan-600" />
-              Remember me
-            </label>
+              <div>
+                <label className="block text-sm font-bold text-orange-200 mb-2">Password</label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full px-4 py-3 bg-black/50 border-2 border-orange-500/50 rounded-xl focus:outline-none focus:border-orange-400 font-semibold text-white"
+                  required
+                />
+              </div>
 
-            {error && <div className="p-3 bg-red-100 border border-red-300 text-red-700 rounded-xl text-sm font-semibold">{error}</div>}
+              <label className="flex items-center gap-3 text-orange-200 font-semibold">
+                <input type="checkbox" checked={rememberMe} onChange={(e) => setRememberMe(e.target.checked)} className="w-5 h-5 accent-orange-500" />
+                Remember me
+              </label>
 
-            <button type="submit" className="w-full bg-gradient-to-r from-cyan-600 to-blue-600 text-white font-black py-3 rounded-xl hover:shadow-lg transition">
-              Login
-            </button>
-          </form>
+              {error && <div className="p-3 bg-red-900/40 border border-red-500/50 text-red-300 rounded-xl text-sm font-semibold">{error}</div>}
+
+              <button type="submit" className="w-full bg-gradient-to-r from-orange-600 to-amber-500 hover:from-orange-500 hover:to-amber-400 text-white font-black py-3 rounded-xl shadow-lg shadow-orange-900/50 transition">
+                Login
+              </button>
+            </form>
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-slate-950 via-cyan-950 to-slate-900 px-4 py-6">
-      <div className="max-w-2xl mx-auto">
-        <div className="mb-8 text-center">
-          <p className="text-cyan-300 font-bold text-sm tracking-widest uppercase">QR Kit Scanner</p>
-          <h1 className="text-4xl font-black text-white mt-2">Kit Claim</h1>
-          <p className="text-cyan-100 mt-2">Logged in as <span className="font-bold text-cyan-200">{committeeName}</span></p>
-          <div className="mt-4 flex gap-2 justify-center">
-            <a href="/qrreader" className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold">Payment</a>
-            <a href="/qrreader/lunch" className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold">Lunch</a>
-          </div>
-        </div>
+    <main className="relative min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top,rgba(251,146,60,0.14),transparent_30%),linear-gradient(135deg,#140704_0%,#241008_45%,#381507_100%)] px-4 py-8 sm:px-6 sm:py-10">
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div className="absolute left-1/2 top-0 h-72 w-72 -translate-x-1/2 rounded-full bg-orange-500/10 blur-3xl" />
+        <div className="absolute -left-20 bottom-0 h-80 w-80 rounded-full bg-amber-500/10 blur-3xl" />
+        <div className="absolute -right-24 top-24 h-96 w-96 rounded-full bg-orange-700/10 blur-3xl" />
+      </div>
 
-        <div className="bg-gradient-to-br from-slate-900 to-slate-800 rounded-2xl border border-cyan-500/30 p-8 mb-8">
-          <label className="block text-center mb-4">
-            <p className="text-cyan-300 font-bold text-sm uppercase tracking-wider mb-3">Scan QR or Paste ID</p>
+      <div className="relative mx-auto flex min-h-[calc(100vh-4rem)] w-full max-w-4xl flex-col justify-center">
+        <div className="space-y-6 sm:space-y-8">
+          <div className="text-center">
+            <p className="text-[0.72rem] font-bold uppercase tracking-[0.38em] text-orange-300/90 sm:text-xs">QR Kit Scanner</p>
+            <h1 className="mt-3 text-4xl font-black tracking-tight text-white sm:text-5xl lg:text-6xl">Kit Claim</h1>
+            <p className="mt-3 text-sm text-orange-100/75 sm:text-base">Logged in as <span className="font-bold text-orange-300">{committeeName}</span></p>
+          </div>
+
+          <div className="mx-auto grid w-full max-w-3xl grid-cols-2 gap-2 rounded-2xl border border-orange-500/30 bg-black/25 p-2 shadow-xl shadow-black/25 backdrop-blur-sm">
+            <a href="/qrreader" className="inline-flex h-12 items-center justify-center gap-2 rounded-xl border border-orange-500/25 bg-black/35 px-4 text-sm font-bold text-orange-100 transition hover:border-orange-400/50 hover:bg-orange-500/10">
+              Payment
+            </a>
+            <a href="/qrreader/lunch" className="inline-flex h-12 items-center justify-center gap-2 rounded-xl border border-orange-500/25 bg-black/35 px-4 text-sm font-bold text-orange-100 transition hover:border-orange-400/50 hover:bg-orange-500/10">
+              Lunch
+            </a>
+          </div>
+
+          <div className="mx-auto w-full max-w-3xl rounded-[28px] border border-orange-500/25 bg-[linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.01))] p-5 shadow-2xl shadow-black/30 backdrop-blur-md sm:p-7">
             <input
               ref={scanInputRef}
               type="text"
               value={manualCode}
               onChange={(e) => setManualCode(e.target.value)}
-              placeholder="Scan USB QR code or paste ID..."
-              className="w-full px-6 py-4 bg-slate-950 border-2 border-cyan-500/50 text-white text-lg font-semibold rounded-xl placeholder-slate-500 focus:outline-none focus:border-cyan-400 text-center"
+              className="sr-only"
+              aria-hidden="true"
+              tabIndex={-1}
             />
-          </label>
 
-          <div className="mb-6 relative">
-            <label className="block text-center mb-3">
-              <p className="text-cyan-300 font-bold text-sm uppercase tracking-wider mb-3">Or Search for User</p>
-              <input
-                type="text"
-                value={userSearch}
-                onChange={(e) => {
-                  setUserSearch(e.target.value);
-                  debounceSearch(e.target.value);
-                }}
-                placeholder="Type attendee name..."
-                className="w-full px-6 py-4 bg-slate-950 border-2 border-cyan-500/50 text-white text-lg font-semibold rounded-xl placeholder-slate-500 focus:outline-none focus:border-cyan-400 text-center"
-              />
-            </label>
-
-            {userSearch.length > 0 && (
-              <div className="absolute top-full left-0 right-0 mt-2 z-40">
-                {isSearching && <div className="bg-slate-950 border border-cyan-500/50 rounded-lg p-4 text-center text-cyan-200">Searching...</div>}
-
-                {!isSearching && searchResults.length > 0 && (
-                  <div className="bg-slate-950 border border-cyan-500/50 rounded-lg overflow-hidden max-h-80 overflow-y-auto shadow-lg">
-                    {searchResults.map((result) => (
-                      <button
-                        key={result.id}
-                        onClick={() => handleUserSelect(result.id)}
-                        className="w-full px-4 py-3 text-left hover:bg-cyan-700/20 transition border-b border-slate-800 last:border-0 flex items-start justify-between"
-                      >
-                        <div>
-                          <p className="text-white font-bold">{result.fullName}</p>
-                          {(result.ministry || result.church) && (
-                            <p className="text-cyan-200 text-xs mt-1">
-                              {result.ministry && <span>{result.ministry}</span>}
-                              {result.ministry && result.church && <span> • </span>}
-                              {result.church && <span>{result.church}</span>}
-                            </p>
-                          )}
-                        </div>
-                        <span className={`text-xs font-bold px-2 py-1 rounded ml-2 ${result.paymentStatus === "paid" ? "bg-green-600/40 border border-green-500 text-green-300" : "bg-orange-600/40 border border-orange-500 text-orange-300"}`}>
-                          {result.paymentStatus === "paid" ? "PAID" : "PENDING"}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
+            <div className="relative">
+              <div className="flex items-start gap-4">
+                <div className="mt-1 flex h-11 w-11 items-center justify-center rounded-2xl border border-orange-500/25 bg-orange-500/10 text-orange-300">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="m21 21-4.3-4.3" />
+                  </svg>
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h2 className="text-xl font-bold text-white sm:text-2xl">Search For Attendee</h2>
+                  <p className="mt-1 text-sm text-orange-100/60">Search attendee names to start kit lookup.</p>
+                </div>
               </div>
-            )}
+
+              <div className="relative mt-4">
+                <input
+                  type="text"
+                  value={userSearch}
+                  onChange={(e) => {
+                    setUserSearch(e.target.value);
+                    debounceSearch(e.target.value);
+                  }}
+                  placeholder="Type attendee name..."
+                  className="h-14 w-full rounded-2xl border border-orange-500/35 bg-black/55 pl-14 pr-6 text-base font-semibold text-white placeholder-orange-100/25 outline-none transition-colors focus:border-orange-400 sm:text-lg"
+                />
+                <div className="pointer-events-none absolute left-5 top-1/2 -translate-y-1/2 text-orange-200/65">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="m21 21-4.3-4.3" />
+                  </svg>
+                </div>
+              </div>
+
+              {userSearch.length > 0 && (
+                <div className="absolute top-full left-0 right-0 mt-3 z-40">
+                  {isSearching && <div className="rounded-2xl border border-orange-500/40 bg-black/90 p-4 text-center text-orange-200 shadow-xl shadow-black/30">Searching...</div>}
+
+                  {!isSearching && searchResults.length > 0 && (
+                    <div className="max-h-80 overflow-y-auto rounded-2xl border border-orange-500/40 bg-black/95 shadow-xl shadow-black/40">
+                      {searchResults.map((result) => (
+                        <button
+                          key={result.id}
+                          onClick={() => handleUserSelect(result.id)}
+                          className={`flex w-full items-start justify-between gap-3 border-b border-orange-500/10 px-4 py-4 text-left transition last:border-0 hover:bg-orange-600/15 ${
+                            result.paymentStatus === "paid" ? "bg-green-900/15" : ""
+                          }`}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <p className="font-bold text-white">{result.fullName}</p>
+                            {(result.ministry || result.church) && (
+                              <p className="mt-1 text-xs text-orange-200/90">
+                                {result.ministry && <span>{result.ministry}</span>}
+                                {result.ministry && result.church && <span> • </span>}
+                                {result.church && <span>{result.church}</span>}
+                              </p>
+                            )}
+                          </div>
+                          <span className={`whitespace-nowrap rounded-full border px-2.5 py-1 text-xs font-bold ${result.paymentStatus === "paid" ? "border-green-500 bg-green-600/30 text-green-300" : "border-orange-500 bg-orange-600/30 text-orange-300"}`}>
+                            {result.paymentStatus === "paid" ? "✓ PAID" : "PENDING"}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {!isSearching && searchResults.length === 0 && userSearch.length > 0 && (
+                    <div className="rounded-2xl border border-orange-500/20 bg-black/90 p-4 text-center text-sm text-orange-100/60 shadow-xl shadow-black/30">
+                      No attendees found. Try another name.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
 
-          {processing && <p className="text-center text-cyan-200 font-semibold">Reading attendee...</p>}
-          {error && <div className="mt-4 p-3 bg-red-900/30 border border-red-500/50 text-red-300 rounded-lg text-center text-sm font-semibold">{error}</div>}
-        </div>
+          {processing && (
+            <div className="flex justify-center">
+              <div className="inline-flex items-center gap-3 rounded-full border border-orange-500/25 bg-black/35 px-4 py-2 text-sm font-semibold text-orange-200 shadow-lg shadow-black/20">
+                <div className="h-5 w-5 rounded-full border-[3px] border-orange-500 border-t-green-400 animate-spin" />
+                Reading attendee...
+              </div>
+            </div>
+          )}
 
-        <div className="text-center">
-          <button onClick={logout} className="px-6 py-2 bg-red-600/80 hover:bg-red-700 text-white font-bold rounded-lg transition">Logout</button>
+          {error && (
+            <div className="mx-auto w-full max-w-3xl rounded-2xl border border-red-500/40 bg-red-900/25 px-4 py-3 text-center text-sm font-semibold text-red-300 shadow-lg shadow-black/20">
+              {error}
+            </div>
+          )}
+
+          <div className="flex justify-center pt-2">
+            <button
+              onClick={logout}
+              className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-red-600 px-5 text-sm font-bold text-white shadow-lg shadow-red-950/30 transition hover:bg-red-700"
+            >
+              Logout
+            </button>
+          </div>
         </div>
 
         {modal && (
-          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-            <div className="bg-gradient-to-br from-slate-900 to-slate-800 rounded-3xl border border-cyan-500/30 p-8 max-w-md w-full shadow-2xl">
+          <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+            <div className="bg-gradient-to-br from-neutral-950 to-orange-950 rounded-3xl border border-orange-500/30 p-8 max-w-md w-full shadow-2xl">
               <div className="text-center mb-5">
-                <p className="text-cyan-300 text-xs font-bold uppercase tracking-wider">{modal.conference}</p>
+                <p className="text-orange-300 text-xs font-bold uppercase tracking-wider">{modal.conference}</p>
                 <p className="text-4xl font-black text-white mt-3">{modal.fullName}</p>
               </div>
 
@@ -515,13 +641,13 @@ export default function KitPage() {
                 </p>
               </div>
 
-              <div className="bg-cyan-600/10 border border-cyan-500/40 rounded-lg p-4 mb-6">
-                <p className="text-xs font-bold uppercase tracking-wider mb-3 text-cyan-300 text-center">Kit Items</p>
+              <div className="bg-orange-600/10 border border-orange-500/40 rounded-lg p-4 mb-6">
+                <p className="text-xs font-bold uppercase tracking-wider mb-3 text-orange-300 text-center">Kit Items</p>
                 <div className="grid grid-cols-2 gap-2 mb-3">
-                  <label className="flex items-center gap-2 bg-slate-950/50 rounded px-3 py-2 cursor-pointer"><input type="checkbox" checked={modal.kit.toteBag} onChange={() => toggleKitItem("toteBag")} className="accent-cyan-500" /><span className="text-sm text-white font-semibold">Tote Bag</span></label>
-                  <label className="flex items-center gap-2 bg-slate-950/50 rounded px-3 py-2 cursor-pointer"><input type="checkbox" checked={modal.kit.mug} onChange={() => toggleKitItem("mug")} className="accent-cyan-500" /><span className="text-sm text-white font-semibold">Mug</span></label>
-                  <label className="flex items-center gap-2 bg-slate-950/50 rounded px-3 py-2 cursor-pointer"><input type="checkbox" checked={modal.kit.notebook} onChange={() => toggleKitItem("notebook")} className="accent-cyan-500" /><span className="text-sm text-white font-semibold">Notebook</span></label>
-                  <label className="flex items-center gap-2 bg-slate-950/50 rounded px-3 py-2 cursor-pointer"><input type="checkbox" checked={modal.kit.pencil} onChange={() => toggleKitItem("pencil")} className="accent-cyan-500" /><span className="text-sm text-white font-semibold">Pencil</span></label>
+                  <label className="flex items-center gap-2 bg-black/40 rounded px-3 py-2 cursor-pointer border border-orange-500/10"><input type="checkbox" checked={modal.kit.toteBag} onChange={() => toggleKitItem("toteBag")} className="accent-orange-500" /><span className="text-sm text-white font-semibold">Tote Bag</span></label>
+                  <label className="flex items-center gap-2 bg-black/40 rounded px-3 py-2 cursor-pointer border border-orange-500/10"><input type="checkbox" checked={modal.kit.mug} onChange={() => toggleKitItem("mug")} className="accent-orange-500" /><span className="text-sm text-white font-semibold">Mug</span></label>
+                  <label className="flex items-center gap-2 bg-black/40 rounded px-3 py-2 cursor-pointer border border-orange-500/10"><input type="checkbox" checked={modal.kit.notebook} onChange={() => toggleKitItem("notebook")} className="accent-orange-500" /><span className="text-sm text-white font-semibold">Notebook</span></label>
+                  <label className="flex items-center gap-2 bg-black/40 rounded px-3 py-2 cursor-pointer border border-orange-500/10"><input type="checkbox" checked={modal.kit.pencil} onChange={() => toggleKitItem("pencil")} className="accent-orange-500" /><span className="text-sm text-white font-semibold">Pencil</span></label>
                 </div>
 
                 {modal.kit.claimedByCommittee && (
@@ -532,8 +658,8 @@ export default function KitPage() {
                 )}
 
                 <div className="grid grid-cols-2 gap-2">
-                  <button onClick={checkAllKitItems} className="bg-cyan-700/70 hover:bg-cyan-700 text-white font-bold py-2 rounded-lg transition text-sm">CHECK ALL</button>
-                  <button onClick={() => claimKitItems(true)} disabled={kitProcessing || modal.paymentStatus !== "paid"} className="bg-cyan-600 hover:bg-cyan-700 disabled:opacity-60 text-white font-bold py-2 rounded-lg transition text-sm">CLAIM ALL</button>
+                  <button onClick={checkAllKitItems} className="bg-black/40 border border-orange-500/30 hover:bg-orange-500/10 text-orange-100 font-bold py-2 rounded-lg transition text-sm">CHECK ALL</button>
+                  <button onClick={() => claimKitItems(true)} disabled={kitProcessing || modal.paymentStatus !== "paid"} className="bg-orange-600 hover:bg-orange-500 disabled:opacity-60 text-white font-bold py-2 rounded-lg transition text-sm">CLAIM ALL</button>
                 </div>
               </div>
 
@@ -541,7 +667,7 @@ export default function KitPage() {
                 <button
                   onClick={() => claimKitItems(false)}
                   disabled={kitProcessing || modal.paymentStatus !== "paid"}
-                  className="w-full bg-cyan-600 hover:bg-cyan-700 disabled:opacity-60 text-white font-black py-4 rounded-xl transition text-lg"
+                  className="w-full bg-gradient-to-r from-orange-600 to-amber-500 hover:from-orange-500 hover:to-amber-400 disabled:opacity-60 text-white font-black py-4 rounded-xl transition text-lg"
                 >
                   {kitProcessing ? "Saving..." : modal.paymentStatus === "paid" ? "CLAIM SELECTED KIT ITEMS" : "PAYMENT REQUIRED BEFORE KIT CLAIM"}
                 </button>

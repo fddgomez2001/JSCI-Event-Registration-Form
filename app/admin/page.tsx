@@ -20,7 +20,8 @@ import {
 
 type AdminTab = "dashboard" | "registrations" | "callers" | "number-requests";
 type RegistrationView = "all" | "bulk";
-type RegistrationSource = "individual" | "bulk";
+type RegistrationSource = "individual" | "bulk" | "walkin";
+type RegistrationSourceFilter = "all" | "individual" | "bulk" | "walkin";
 type Conference = "leyte" | "cebu";
 type CallStatus = "available" | "calling" | "confirmed" | "not_attending" | "follow_up_needed" | "no_number";
 
@@ -84,7 +85,37 @@ type BulkLinkedAttendee = {
 type AdminResponse = {
   individual?: IndividualRow[];
   bulk?: BulkRow[];
+  walkIn?: WalkInRow[];
+  substitutions?: AttendeeSubstitutionRow[];
   error?: string;
+};
+
+type AttendeeSubstitutionRow = {
+  id: string;
+  attendee_id: string;
+  attendee_key: string;
+  source_type: "individual" | "bulk" | "walkin" | string;
+  source_id: string;
+  source_index: number;
+  conference: Conference;
+  original_full_name: string;
+  substitute_full_name: string;
+  requested_by_committee: string | null;
+  substituted_at: string;
+  updated_at: string;
+};
+
+type WalkInRow = {
+  id: string;
+  attendee_key: string;
+  full_name: string;
+  phone_number: string | null;
+  church: string;
+  ministry: string | null;
+  address: string;
+  local_church_pastor: string;
+  conference: Conference;
+  created_at: string;
 };
 
 type CallerLogRow = {
@@ -135,7 +166,7 @@ type NumberRequestsResponse = {
 type AdminRecord = {
   id: string;
   sourceType: RegistrationSource;
-  sourceLabel: "Individual" | "Bulk";
+  sourceLabel: "Individual" | "Bulk" | "Walk-in";
   addedByAdmin: boolean;
   name: string;
   contactPerson: string;
@@ -148,6 +179,12 @@ type AdminRecord = {
   attendeeNames: string;
   submittedAt: string;
   key: string;
+  substitution?: {
+    originalName: string;
+    substituteName: string;
+    requestedBy: string;
+    substitutedAt: string;
+  } | null;
 };
 
 type EditFormState = {
@@ -539,13 +576,13 @@ export default function AdminPage() {
   const [selectedBulkId, setSelectedBulkId] = useState<string>("");
   const [individualRows, setIndividualRows] = useState<IndividualRow[]>([]);
   const [bulkRows, setBulkRows] = useState<BulkRow[]>([]);
+  const [walkInRows, setWalkInRows] = useState<WalkInRow[]>([]);
+  const [substitutionRows, setSubstitutionRows] = useState<AttendeeSubstitutionRow[]>([]);
   const [callerLogRows, setCallerLogRows] = useState<CallerLogRow[]>([]);
   const [numberRequestRows, setNumberRequestRows] = useState<NumberRequestRow[]>([]);
 
   const [allSearch, setAllSearch] = useState("");
-  const [allSourceFilter, setAllSourceFilter] = useState<
-    "all" | "individual" | "bulk"
-  >("all");
+  const [allSourceFilter, setAllSourceFilter] = useState<RegistrationSourceFilter>("all");
   const [allMinistryFilter, setAllMinistryFilter] = useState("all");
   const [allPage, setAllPage] = useState(1);
 
@@ -673,12 +710,45 @@ export default function AdminPage() {
       (sum, row) => sum + (row.attendee_count || 0),
       0,
     );
-    return individualCount + bulkCount;
-  }, [individualRows, bulkRows]);
+    const walkInCount = walkInRows.length;
+    return individualCount + bulkCount + walkInCount;
+  }, [individualRows, bulkRows, walkInRows]);
 
-  const totalRegistrations = individualRows.length + bulkRows.length;
+  const totalRegistrations = individualRows.length + bulkRows.length + walkInRows.length;
 
   const allRows = useMemo<AdminRecord[]>(() => {
+    const substitutionByKey = new Map<
+      string,
+      {
+        originalName: string;
+        substituteName: string;
+        requestedBy: string;
+        substitutedAt: string;
+      }
+    >();
+
+    substitutionRows.forEach((row) => {
+      const sourceType = String(row.source_type ?? "individual").toLowerCase();
+      const sourceId = String(row.source_id ?? "").trim();
+      const sourceIndex = Number(row.source_index ?? 0);
+      if (!sourceId) return;
+
+      const key = sourceType === "bulk"
+        ? `b-${sourceId}-${sourceIndex}`
+        : sourceType === "walkin"
+          ? `w-${sourceId}`
+          : `i-${sourceId}`;
+
+      if (substitutionByKey.has(key)) return;
+
+      substitutionByKey.set(key, {
+        originalName: row.original_full_name,
+        substituteName: row.substitute_full_name,
+        requestedBy: row.requested_by_committee ?? "Unknown",
+        substitutedAt: row.substituted_at,
+      });
+    });
+
     const individualMapped: AdminRecord[] = individualRows.map((row) => ({
       id: row.id,
       sourceType: "individual",
@@ -695,6 +765,7 @@ export default function AdminPage() {
       attendeeNames: row.full_name,
       submittedAt: row.created_at,
       key: `i-${row.id}`,
+      substitution: substitutionByKey.get(`i-${row.id}`) ?? null,
     }));
 
     const bulkMapped: AdminRecord[] = bulkRows.flatMap((row) => {
@@ -725,14 +796,34 @@ export default function AdminPage() {
         attendeeNames: attendee.attendee_name,
         submittedAt: row.created_at,
         key: `b-${row.id}-${index}`,
+        substitution: substitutionByKey.get(`b-${row.id}-${index}`) ?? null,
       }));
     });
 
-    return [...individualMapped, ...bulkMapped].sort(
+    const walkInMapped: AdminRecord[] = walkInRows.map((row) => ({
+      id: row.id,
+      sourceType: "walkin",
+      sourceLabel: "Walk-in",
+      addedByAdmin: false,
+      name: row.full_name,
+      contactPerson: "Walk-in",
+      church: row.church || "N/A",
+      ministry: row.ministry || "N/A",
+      address: row.address || "N/A",
+      pastor: row.local_church_pastor || "N/A",
+      phone: row.phone_number || "N/A",
+      attendees: 1,
+      attendeeNames: row.full_name,
+      submittedAt: row.created_at,
+      key: `w-${row.id}`,
+      substitution: substitutionByKey.get(`w-${row.id}`) ?? null,
+    }));
+
+    return [...individualMapped, ...bulkMapped, ...walkInMapped].sort(
       (a, b) =>
         new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime(),
     );
-  }, [individualRows, bulkRows]);
+  }, [individualRows, bulkRows, walkInRows, substitutionRows]);
 
   const ministryOptions = useMemo(() => {
     const values = new Set(baseMinistryOptions);
@@ -1068,6 +1159,8 @@ export default function AdminPage() {
 
       setIndividualRows(Array.isArray(data.individual) ? data.individual : []);
       setBulkRows(Array.isArray(data.bulk) ? data.bulk : []);
+      setWalkInRows(Array.isArray(data.walkIn) ? data.walkIn : []);
+      setSubstitutionRows(Array.isArray(data.substitutions) ? data.substitutions : []);
 
       const callerResponse = await fetch(`/api/callers?${new URLSearchParams({ conference }).toString()}`, {
         cache: "no-store",
@@ -1736,6 +1829,8 @@ export default function AdminPage() {
     setPassword("");
     setIndividualRows([]);
     setBulkRows([]);
+    setWalkInRows([]);
+    setSubstitutionRows([]);
     setStatus("Logged out.");
     setActiveTab("dashboard");
     setRegistrationView("all");
@@ -1763,7 +1858,7 @@ export default function AdminPage() {
   }
 
   function openEditFromAllRow(row: AdminRecord) {
-    if (row.sourceType === "individual") {
+    if (row.sourceType === "individual" || row.sourceType === "walkin") {
       openEditModal(row);
       return;
     }
@@ -1794,7 +1889,7 @@ export default function AdminPage() {
   }
 
   function openDeleteFromAllRow(row: AdminRecord) {
-    if (row.sourceType === "individual") {
+    if (row.sourceType === "individual" || row.sourceType === "walkin") {
       openDeleteModal(row);
       return;
     }
@@ -2420,7 +2515,7 @@ export default function AdminPage() {
     setIsSaving(true);
 
     const payload =
-      editingRow.sourceType === "individual"
+      editingRow.sourceType === "individual" || editingRow.sourceType === "walkin"
         ? {
             name: editForm.name,
             church: editForm.church,
@@ -3615,15 +3710,14 @@ export default function AdminPage() {
                       <select
                         value={allSourceFilter}
                         onChange={(event) =>
-                          setAllSourceFilter(
-                            event.target.value as "all" | "individual" | "bulk",
-                          )
+                          setAllSourceFilter(event.target.value as RegistrationSourceFilter)
                         }
                         className="rounded-lg border border-amber-100/30 bg-slate-950/50 px-3 py-2 text-sm"
                       >
                         <option value="all">All Sources</option>
                         <option value="individual">Individual</option>
                         <option value="bulk">Bulk</option>
+                        <option value="walkin">Walk-in</option>
                       </select>
 
                       <select
@@ -3665,6 +3759,7 @@ export default function AdminPage() {
                             <th className="px-3 py-2">Phone</th>
                             <th className="px-3 py-2">Attendees</th>
                             <th className="px-3 py-2">Attendee Names</th>
+                            <th className="px-3 py-2">Substitution</th>
                             <th className="px-3 py-2">Submitted</th>
                             <th className="px-3 py-2">Actions</th>
                           </tr>
@@ -3708,6 +3803,17 @@ export default function AdminPage() {
                                   {row.attendeeNames}
                                 </td>
                                 <td className="px-3 py-2">
+                                  {row.substitution ? (
+                                    <div className="rounded-lg border border-orange-300/30 bg-orange-500/10 px-2 py-1.5 text-[11px] leading-relaxed">
+                                      <p className="font-bold text-orange-100">Old: {row.substitution.originalName}</p>
+                                      <p className="text-emerald-200">New: {row.substitution.substituteName}</p>
+                                      <p className="text-orange-200/80">By: {row.substitution.requestedBy}</p>
+                                    </div>
+                                  ) : (
+                                    <span className="text-amber-100/60">-</span>
+                                  )}
+                                </td>
+                                <td className="px-3 py-2">
                                   {formatDate(row.submittedAt)}
                                 </td>
                                 <td className="px-3 py-2">
@@ -3740,7 +3846,7 @@ export default function AdminPage() {
                           ) : (
                             <tr>
                               <td
-                                colSpan={14}
+                                colSpan={15}
                                 className="px-3 py-6 text-center text-amber-200"
                               >
                                 No registrations found.
@@ -3763,6 +3869,8 @@ export default function AdminPage() {
                                 className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold tracking-wider ${
                                   row.sourceType === "bulk"
                                     ? "bg-amber-100/20 text-amber-200"
+                                    : row.sourceType === "walkin"
+                                      ? "bg-orange-100/20 text-orange-200"
                                     : "bg-blue-100/20 text-blue-200"
                                 }`}
                               >
@@ -3781,6 +3889,17 @@ export default function AdminPage() {
                             <h4 className="text-base font-bold text-amber-100">
                               {row.name}
                             </h4>
+
+                            {row.substitution ? (
+                              <div className="mt-2 rounded-lg border border-orange-300/30 bg-orange-500/10 p-2">
+                                <p className="text-[10px] uppercase tracking-wider text-orange-200/80 font-bold">
+                                  Substitution
+                                </p>
+                                <p className="mt-1 text-xs text-orange-100">Old: {row.substitution.originalName}</p>
+                                <p className="text-xs text-emerald-200">New: {row.substitution.substituteName}</p>
+                                <p className="text-[11px] text-orange-200/75">Requested by: {row.substitution.requestedBy}</p>
+                              </div>
+                            ) : null}
 
                             <div className="mt-2 grid grid-cols-2 gap-y-2 gap-x-4 text-xs">
                               <div>

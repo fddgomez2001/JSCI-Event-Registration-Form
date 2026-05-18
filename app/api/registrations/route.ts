@@ -305,9 +305,26 @@ export async function GET(request: Request) {
       .order("created_at", { ascending: false })
       .limit(5000);
 
-    const [individualResult, bulkResult] = await Promise.all([
+    const walkInQuery = supabaseAdmin
+      .from("attendee_call_queue")
+      .select("id,attendee_key,full_name,phone_number,church,ministry,address,local_church_pastor,conference,created_at")
+      .like("attendee_key", "walk-%")
+      .order("created_at", { ascending: false })
+      .limit(5000);
+
+    const substitutionsQuery = supabaseAdmin
+      .from("attendee_substitutions")
+      .select(
+        "id,attendee_id,attendee_key,source_type,source_id,source_index,conference,original_full_name,substitute_full_name,requested_by_committee,substituted_at,updated_at",
+      )
+      .order("updated_at", { ascending: false })
+      .limit(5000);
+
+    const [individualResult, bulkResult, walkInResult, substitutionsResult] = await Promise.all([
       conferenceParam ? individualQuery.eq("conference", conference) : individualQuery,
       conferenceParam ? bulkQuery.eq("conference", conference) : bulkQuery,
+      conferenceParam ? walkInQuery.eq("conference", conference) : walkInQuery,
+      conferenceParam ? substitutionsQuery.eq("conference", conference) : substitutionsQuery,
     ]);
 
     if (individualResult.error) {
@@ -317,11 +334,39 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: individualResult.error.message }, { status: 500 });
     }
 
+    if (substitutionsResult.error && (substitutionsResult.error as { code?: string }).code !== "PGRST205") {
+      return NextResponse.json({ error: substitutionsResult.error.message }, { status: 500 });
+    }
+
+    const substitutionsRows = (substitutionsResult.data ?? []) as Array<{
+      id: string;
+      attendee_id: string;
+      attendee_key: string;
+      source_type: string;
+      source_id: string;
+      source_index: number;
+      conference: "leyte" | "cebu";
+      original_full_name: string;
+      substitute_full_name: string;
+      requested_by_committee: string | null;
+      substituted_at: string;
+      updated_at: string;
+    }>;
+
     if (bulkResult.error) {
       if ((bulkResult.error as { code?: string }).code === "PGRST205") {
-        return NextResponse.json({ individual: individualResult.data ?? [], bulk: [] });
+        return NextResponse.json({
+          individual: individualResult.data ?? [],
+          bulk: [],
+          walkIn: walkInResult.data ?? [],
+          substitutions: substitutionsRows,
+        });
       }
       return NextResponse.json({ error: bulkResult.error.message }, { status: 500 });
+    }
+
+    if (walkInResult.error && (walkInResult.error as { code?: string }).code !== "PGRST205") {
+      return NextResponse.json({ error: walkInResult.error.message }, { status: 500 });
     }
 
     const bulkRows = (bulkResult.data ?? []) as Array<{
@@ -343,6 +388,8 @@ export async function GET(request: Request) {
       return NextResponse.json({
         individual: individualResult.data ?? [],
         bulk: bulkRows,
+        walkIn: walkInResult.data ?? [],
+        substitutions: substitutionsRows,
       });
     }
 
@@ -451,6 +498,8 @@ export async function GET(request: Request) {
     return NextResponse.json({
       individual: individualResult.data ?? [],
       bulk: mergedBulkRows,
+      walkIn: walkInResult.data ?? [],
+      substitutions: substitutionsRows,
     });
   }
 
@@ -990,14 +1039,14 @@ export async function PATCH(request: Request) {
   }
 
   let body: {
-    type?: "individual" | "bulk";
+    type?: "individual" | "bulk" | "walkin";
     id?: string;
     payload?: BulkFormPayload;
   };
 
   try {
     body = (await request.json()) as {
-      type?: "individual" | "bulk";
+      type?: "individual" | "bulk" | "walkin";
       id?: string;
       payload?: BulkFormPayload;
     };
@@ -1041,6 +1090,33 @@ export async function PATCH(request: Request) {
     }
 
     return NextResponse.json({ message: "Individual record updated." });
+  }
+
+  if (type === "walkin") {
+    const required = ["name", "church"];
+    const missing = required.find((field) => !String(payload[field] ?? "").trim());
+    if (missing) {
+      return NextResponse.json({ error: `${missing} is required.` }, { status: 400 });
+    }
+
+    const { error } = await supabaseAdmin
+      .from("attendee_call_queue")
+      .update({
+        full_name: normalizePersonName(String(payload.name ?? "")),
+        church: String(payload.church ?? "").trim(),
+        ministry: String(payload.ministry ?? "").trim() || null,
+        address: String(payload.address ?? "").trim(),
+        local_church_pastor: normalizePersonName(String(payload.localChurchPastor ?? "")),
+        phone_number: String(payload.phoneNumber ?? "").trim() || null,
+      })
+      .eq("id", id)
+      .like("attendee_key", "walk-%");
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ message: "Walk-in record updated." });
   }
 
   const required = [
@@ -1212,13 +1288,33 @@ export async function DELETE(request: Request) {
   const type = searchParams.get("type");
   const id = String(searchParams.get("id") ?? "").trim();
 
-  if (!id || (type !== "individual" && type !== "bulk")) {
+  if (!id || (type !== "individual" && type !== "bulk" && type !== "walkin")) {
     return NextResponse.json({ error: "Valid type and id are required." }, { status: 400 });
   }
 
   const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
+
+  if (type === "walkin") {
+    // Delete related scan logs first in case FK constraints are not cascading.
+    const { error: logsError } = await supabaseAdmin.from("qr_scan_logs").delete().eq("attendee_id", id);
+    if (logsError && (logsError as { code?: string }).code !== "PGRST205") {
+      return NextResponse.json({ error: logsError.message }, { status: 500 });
+    }
+
+    const { error: walkInError } = await supabaseAdmin
+      .from("attendee_call_queue")
+      .delete()
+      .eq("id", id)
+      .like("attendee_key", "walk-%");
+
+    if (walkInError) {
+      return NextResponse.json({ error: walkInError.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ message: "Walk-in record deleted." });
+  }
 
   const tableName = type === "individual" ? "individual_registrations" : "bulk_registrations";
   const { error } = await supabaseAdmin.from(tableName).delete().eq("id", id);

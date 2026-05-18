@@ -11,33 +11,13 @@ type ScanEvent = {
   paymentMethod?: "cash" | "online" | "pending";
 };
 
-type PaymentOption = {
-  name: string;
-  qrImage: string;
-  number: string;
-};
-
 export default function DisplayPage() {
   const [current, setCurrent] = useState<ScanEvent | null>(null);
-  const [history, setHistory] = useState<ScanEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const [animKey, setAnimKey] = useState(0);
   const [showingPaymentMethod, setShowingPaymentMethod] = useState<"cash" | "online" | null>(null);
   const channelRef = useRef<ReturnType<ReturnType<typeof createClient>["channel"]> | null>(null);
   const clearTimerRef = useRef<NodeJS.Timeout | null>(null);
-
-  const paymentOptions: { [key: string]: PaymentOption } = {
-    gcash: {
-      name: "GCash",
-      qrImage: "https://via.placeholder.com/300?text=GCash+QR",
-      number: "09123456789",
-    },
-    maya: {
-      name: "Maya",
-      qrImage: "https://via.placeholder.com/300?text=Maya+QR",
-      number: "09876543210",
-    },
-  };
 
   // Auto-clear attendee display after 6 seconds and return to default image
   useEffect(() => {
@@ -72,7 +52,8 @@ export default function DisplayPage() {
     const channel = supabase
       .channel("display-scans")
       .on("broadcast", { event: "scan" }, (msg) => {
-        const payload = msg.payload as { fullName: string; church: string; conference: string; paymentMethod?: string };
+        const payload = msg.payload as { fullName: string; church: string; conference: string; paymentMethod?: string; source?: string };
+        if (payload.source !== "payment") return;
         const event: ScanEvent = {
           fullName: payload.fullName,
           church: payload.church ?? "",
@@ -83,14 +64,20 @@ export default function DisplayPage() {
         setCurrent(event);
         setAnimKey((k) => k + 1);
         setShowingPaymentMethod(null);
-        setHistory((prev) => [event, ...prev].slice(0, 20));
       })
       .on("broadcast", { event: "payment-method-selected" }, (msg) => {
-        const payload = msg.payload as { paymentMethod: string };
+        const payload = msg.payload as { paymentMethod: string; source?: string };
+        if (payload.source !== "payment") return;
         setShowingPaymentMethod((payload.paymentMethod as any) || null);
       })
+      .on("broadcast", { event: "display-reset" }, () => {
+        setCurrent(null);
+        setShowingPaymentMethod(null);
+        setAnimKey((k) => k + 1);
+      })
       .on("broadcast", { event: "payment-confirmed" }, (msg) => {
-        const payload = msg.payload as { fullName: string; church: string; conference: string; paymentMethod: string };
+        const payload = msg.payload as { fullName: string; church: string; conference: string; paymentMethod: string; source?: string };
+        if (payload.source !== "payment") return;
         const event: ScanEvent = {
           fullName: payload.fullName,
           church: payload.church ?? "",
@@ -131,7 +118,7 @@ export default function DisplayPage() {
             style={{
               background:
                 "radial-gradient(ellipse 80% 60% at 50% 50%, rgba(249,115,22,0.2) 0%, transparent 70%)",
-              animation: "fadeGlow 0.6s ease-out",
+              animation: "glowPulse 0.8s cubic-bezier(0.34, 1.56, 0.64, 1) ease-out",
             }}
           />
         )}
@@ -141,43 +128,35 @@ export default function DisplayPage() {
           <div
             key={`online-${animKey}`}
             className="text-center w-full max-w-5xl"
-            style={{ animation: "slideUp 0.45s cubic-bezier(0.22,1,0.36,1)" }}
+            style={{ animation: "slideUpSmooth 0.8s cubic-bezier(0.34, 1.56, 0.64, 1)" }}
           >
             {/* Name and Church Header */}
-            <div className="mb-8">
+            <div className="mb-8" style={{ animation: "fadeInScaleSmooth 0.9s cubic-bezier(0.34, 1.56, 0.64, 1) 0.1s both" }}>
               <h2 className="text-6xl font-black text-white mb-2 leading-tight">{current.fullName}</h2>
               {current.church && <p className="text-3xl text-orange-300 font-bold">{current.church}</p>}
             </div>
 
             {/* Payment Instructions */}
-            <p className="text-amber-400 font-black text-4xl mb-12 uppercase tracking-widest">💳 ONLINE PAYMENT REQUIRED</p>
+            <p className="text-amber-400 font-black text-4xl mb-12 uppercase tracking-widest" style={{ animation: "fadeInScaleSmooth 0.9s cubic-bezier(0.34, 1.56, 0.64, 1) 0.2s both" }}>💳 ONLINE PAYMENT REQUIRED</p>
 
             {/* QR Code Grid - Large Display */}
             <div className="grid grid-cols-2 gap-8 mb-12">
               {/* GCash */}
-              <div className="bg-orange-900/20 border-2 border-orange-500/50 rounded-2xl p-8">
+              <div className="bg-orange-900/20 border-2 border-orange-500/50 rounded-2xl p-8" style={{ animation: "fadeInScaleSmooth 0.9s cubic-bezier(0.34, 1.56, 0.64, 1) 0.3s both" }}>
                 <p className="text-orange-300 font-black text-3xl mb-8 text-center">GCash</p>
-                <div className="bg-white p-4 rounded-xl mb-6 w-80 h-80 mx-auto flex items-center justify-center">
-                  <img 
-                    src={paymentOptions.gcash.qrImage}
-                    alt="GCash QR" 
-                    className="w-full h-full object-contain"
-                  />
+                <div className="mb-6 w-80 h-80 mx-auto rounded-xl border-2 border-dashed border-orange-400/40 bg-black/30 flex items-center justify-center">
+                  <p className="text-center text-orange-200/80 font-bold text-xl px-4">Use cashier QR standee for GCash scan</p>
                 </div>
-                <p className="text-orange-200 text-2xl font-black text-center">{paymentOptions.gcash.number}</p>
+                <p className="text-orange-200 text-2xl font-black text-center">09123456789</p>
               </div>
 
               {/* Maya */}
-              <div className="bg-orange-900/20 border-2 border-orange-500/50 rounded-2xl p-8">
+              <div className="bg-orange-900/20 border-2 border-orange-500/50 rounded-2xl p-8" style={{ animation: "fadeInScaleSmooth 0.9s cubic-bezier(0.34, 1.56, 0.64, 1) 0.35s both" }}>
                 <p className="text-orange-300 font-black text-3xl mb-8 text-center">Maya</p>
-                <div className="bg-white p-4 rounded-xl mb-6 w-80 h-80 mx-auto flex items-center justify-center">
-                  <img 
-                    src={paymentOptions.maya.qrImage}
-                    alt="Maya QR" 
-                    className="w-full h-full object-contain"
-                  />
+                <div className="mb-6 w-80 h-80 mx-auto rounded-xl border-2 border-dashed border-orange-400/40 bg-black/30 flex items-center justify-center">
+                  <p className="text-center text-orange-200/80 font-bold text-xl px-4">Use cashier QR standee for Maya scan</p>
                 </div>
-                <p className="text-orange-200 text-2xl font-black text-center">{paymentOptions.maya.number}</p>
+                <p className="text-orange-200 text-2xl font-black text-center">09876543210</p>
               </div>
             </div>
           </div>
@@ -185,10 +164,10 @@ export default function DisplayPage() {
           <div
             key={animKey}
             className="text-center w-full max-w-4xl"
-            style={{ animation: "slideUp 0.45s cubic-bezier(0.22,1,0.36,1)" }}
+            style={{ animation: "slideUpSmooth 0.8s cubic-bezier(0.34, 1.56, 0.64, 1)" }}
           >
             {/* Conference badge */}
-            <div className="flex justify-center mb-6">
+            <div className="flex justify-center mb-6" style={{ animation: "fadeInScaleSmooth 0.8s cubic-bezier(0.34, 1.56, 0.64, 1)" }}>
               <span
                 className={`inline-block px-5 py-1.5 rounded-full text-sm font-black uppercase tracking-widest border bg-gradient-to-r ${conferenceColor}`}
               >
@@ -202,6 +181,7 @@ export default function DisplayPage() {
               style={{
                 fontSize: "clamp(3rem, 10vw, 8rem)",
                 textShadow: "0 0 60px rgba(249,115,22,0.6)",
+                animation: "fadeInScaleSmooth 0.9s cubic-bezier(0.34, 1.56, 0.64, 1) 0.15s both",
               }}
             >
               {current.fullName}
@@ -211,19 +191,22 @@ export default function DisplayPage() {
             {current.church && (
               <p
                 className="text-orange-300 font-bold tracking-wide"
-                style={{ fontSize: "clamp(1.25rem, 3.5vw, 2.5rem)" }}
+                style={{
+                  fontSize: "clamp(1.25rem, 3.5vw, 2.5rem)",
+                  animation: "fadeInScaleSmooth 0.9s cubic-bezier(0.34, 1.56, 0.64, 1) 0.25s both",
+                }}
               >
                 {current.church}
               </p>
             )}
 
             {/* Divider */}
-            <div className="mt-10 mx-auto w-32 h-1 rounded-full bg-gradient-to-r from-transparent via-orange-500 to-transparent opacity-60" />
+            <div className="mt-10 mx-auto w-32 h-1 rounded-full bg-gradient-to-r from-transparent via-orange-500 to-transparent opacity-60" style={{ animation: "fadeInScaleSmooth 0.8s cubic-bezier(0.34, 1.56, 0.64, 1) 0.35s both" }} />
           </div>
         ) : (
           <div
             className="text-center w-full h-full flex items-center justify-center"
-            style={{ animation: "fadeIn 0.8s ease-in" }}
+            style={{ animation: "fadeInSmooth 1s cubic-bezier(0.34, 1.56, 0.64, 1)" }}
           >
             {/* Idle state - Display Conference Image */}
             <img
@@ -246,9 +229,41 @@ export default function DisplayPage() {
             transform: translateY(0) scale(1);
           }
         }
+        @keyframes slideUpSmooth {
+          from {
+            opacity: 0;
+            transform: translateY(40px) scale(0.95);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+          }
+        }
+        @keyframes fadeInScaleSmooth {
+          from {
+            opacity: 0;
+            transform: scale(0.92);
+          }
+          to {
+            opacity: 1;
+            transform: scale(1);
+          }
+        }
+        @keyframes glowPulse {
+          from { 
+            opacity: 0;
+          }
+          to { 
+            opacity: 1;
+          }
+        }
         @keyframes fadeGlow {
-          from { opacity: 0; }
-          to { opacity: 1; }
+          from { 
+            opacity: 0;
+          }
+          to { 
+            opacity: 1;
+          }
         }
         @keyframes fadeIn {
           from {
@@ -256,6 +271,26 @@ export default function DisplayPage() {
           }
           to {
             opacity: 1;
+          }
+        }
+        @keyframes fadeInSmooth {
+          from {
+            opacity: 0;
+            transform: scale(0.98);
+          }
+          to {
+            opacity: 1;
+            transform: scale(1);
+          }
+        }
+        @keyframes fadeInDown {
+          from {
+            opacity: 0;
+            transform: translateY(-20px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
           }
         }
       `}</style>
