@@ -23,7 +23,7 @@ function getSupabaseAdmin() {
 }
 
 function normalizeConference(value: string | undefined): "leyte" | "cebu" {
-  if (!value) return "cebu";
+  if (!value) return "leyte";
   return value.toLowerCase().includes("cebu") ? "cebu" : "leyte";
 }
 

@@ -9,6 +9,7 @@ type PaymentRequest = {
   attendeeName: string;
   committeeName: string;
   conferenceLabel?: string;
+  paymentMethod?: "cash" | "online";
 };
 
 type BulkPaymentRequest = {
@@ -16,6 +17,7 @@ type BulkPaymentRequest = {
   attendeeNames: string[];
   committeeName: string;
   conferenceLabel?: string;
+  paymentMethod?: "cash" | "online";
 };
 
 type PaymentResponse = {
@@ -27,6 +29,7 @@ type PaymentResponse = {
   paidAt: string | null;
   paidByCommittee: string | null;
   notes?: string | null;
+  conference?: "leyte" | "cebu";
 };
 
 type BulkPaymentResponse = {
@@ -67,7 +70,7 @@ export async function GET(request: Request) {
         const { data: listData, error: listError } = await supabase
           .from("payments")
           .select(
-            "id,attendee_id,attendee_name,amount,payment_method,payment_status,paid_at,paid_by_committee,notes"
+            "id,attendee_id,attendee_name,amount,payment_method,payment_status,paid_at,paid_by_committee,notes,conference"
           )
           .eq("payment_status", "paid")
           .order("paid_at", { ascending: false })
@@ -75,21 +78,41 @@ export async function GET(request: Request) {
 
         if (listError && listError.code !== "PGRST205") throw listError;
 
+        if (!Array.isArray(listData) || listData.length === 0) {
+          return NextResponse.json({ success: true, data: [] });
+        }
+
+        // Look up attendee_key for each paid attendee to detect walk-ins
+        const attendeeIds = listData.map((d: any) => d.attendee_id);
+        const { data: queueData } = await supabase
+          .from("attendee_call_queue")
+          .select("id,attendee_key")
+          .in("id", attendeeIds);
+
+        const walkInSet = new Set<string>();
+        if (Array.isArray(queueData)) {
+          for (const q of queueData) {
+            if (typeof q.attendee_key === "string" && q.attendee_key.startsWith("walk-")) {
+              walkInSet.add(q.id);
+            }
+          }
+        }
+
         return NextResponse.json({
           success: true,
-          data: Array.isArray(listData)
-            ? listData.map((d: any) => ({
-                id: d.id,
-                attendeeId: d.attendee_id,
-                attendeeName: d.attendee_name,
-                amount: d.amount,
-                paymentMethod: d.payment_method,
-                paymentStatus: d.payment_status,
-                paidAt: d.paid_at,
-                paidByCommittee: d.paid_by_committee,
-                notes: d.notes ?? null,
-              }))
-            : [],
+          data: listData.map((d: any) => ({
+            id: d.id,
+            attendeeId: d.attendee_id,
+            attendeeName: d.attendee_name,
+            amount: d.amount,
+            paymentMethod: d.payment_method,
+            paymentStatus: d.payment_status,
+            paidAt: d.paid_at,
+            paidByCommittee: d.paid_by_committee,
+            notes: d.notes ?? null,
+            isWalkIn: walkInSet.has(d.attendee_id),
+            conference: d.conference ?? "leyte",
+          })),
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unable to fetch payments list.";
@@ -101,7 +124,7 @@ export async function GET(request: Request) {
     const { data, error } = await supabase
       .from("payments")
       .select(
-        "id,attendee_id,attendee_name,amount,payment_method,payment_status,paid_at,paid_by_committee,notes"
+        "id,attendee_id,attendee_name,amount,payment_method,payment_status,paid_at,paid_by_committee,notes,conference"
       )
       .eq("attendee_id", attendeeId)
       .maybeSingle();
@@ -122,6 +145,7 @@ export async function GET(request: Request) {
           paidAt: data.paid_at,
           paidByCommittee: data.paid_by_committee,
           notes: data.notes ?? null,
+          conference: data.conference ?? "leyte",
         },
       });
     }
@@ -141,7 +165,8 @@ async function processSinglePayment(
   attendeeId: string,
   attendeeName: string,
   committeeName: string,
-  conference: "leyte" | "cebu"
+  conference: "leyte" | "cebu",
+  paymentMethod: "cash" | "online" = "cash",
 ): Promise<{ success: boolean; payment?: PaymentResponse; error?: string }> {
   try {
     const { data: existingPayment, error: fetchError } = await supabase
@@ -160,14 +185,16 @@ async function processSinglePayment(
       const { data, error } = await supabase
         .from("payments")
         .update({
+          payment_method: paymentMethod,
           payment_status: "paid",
           paid_at: new Date().toISOString(),
           paid_by_committee: committeeName,
+          conference,
           updated_at: new Date().toISOString(),
         })
         .eq("id", existingPayment.id)
         .select(
-          "id,attendee_id,attendee_name,amount,payment_method,payment_status,paid_at,paid_by_committee,notes"
+          "id,attendee_id,attendee_name,amount,payment_method,payment_status,paid_at,paid_by_committee,notes,conference"
         )
         .single();
 
@@ -181,14 +208,14 @@ async function processSinglePayment(
           attendee_name: attendeeName,
           amount: 200.0,
           currency: "PHP",
-          payment_method: "cash",
+          payment_method: paymentMethod,
           payment_status: "paid",
           paid_at: new Date().toISOString(),
           paid_by_committee: committeeName,
           conference: conference,
         })
         .select(
-          "id,attendee_id,attendee_name,amount,payment_method,payment_status,paid_at,paid_by_committee,notes"
+          "id,attendee_id,attendee_name,amount,payment_method,payment_status,paid_at,paid_by_committee,notes,conference"
         )
         .single();
 
@@ -206,6 +233,7 @@ async function processSinglePayment(
         paymentStatus: payment.payment_status,
         paidAt: payment.paid_at,
         paidByCommittee: payment.paid_by_committee,
+        conference: payment.conference ?? conference,
       },
     };
   } catch (error) {
@@ -223,9 +251,9 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ success: false, message: "Missing SUPABASE_SERVICE_ROLE_KEY" }, { status: 500 });
   }
 
-  let body: { id?: string; attendeeId?: string; paymentMethod?: string; notes?: string };
+  let body: { id?: string; attendeeId?: string; paymentMethod?: string; notes?: string; conference?: string };
   try {
-    body = (await request.json()) as { id?: string; attendeeId?: string; paymentMethod?: string; notes?: string };
+    body = (await request.json()) as { id?: string; attendeeId?: string; paymentMethod?: string; notes?: string; conference?: string };
   } catch {
     return NextResponse.json({ success: false, message: "Invalid JSON" }, { status: 400 });
   }
@@ -237,11 +265,12 @@ export async function PATCH(request: Request) {
   const updates: any = {};
   if (body.paymentMethod) updates.payment_method = body.paymentMethod;
   if (typeof body.notes !== "undefined") updates.notes = body.notes;
+  if (typeof body.conference !== "undefined") updates.conference = mapConferenceLabel(body.conference);
   updates.updated_at = new Date().toISOString();
 
   try {
     const query = supabase.from("payments").update(updates).select(
-      "id,attendee_id,attendee_name,amount,payment_method,payment_status,paid_at,paid_by_committee,notes"
+      "id,attendee_id,attendee_name,amount,payment_method,payment_status,paid_at,paid_by_committee,notes,conference"
     );
 
     if (body.id) query.eq("id", body.id);
@@ -252,6 +281,16 @@ export async function PATCH(request: Request) {
 
     if (!data) {
       return NextResponse.json({ success: false, message: "Payment not found" }, { status: 404 });
+    }
+
+    if (typeof body.conference !== "undefined") {
+      const nextConference = mapConferenceLabel(body.conference);
+      const { error: queueError } = await supabase
+        .from("attendee_call_queue")
+        .update({ conference: nextConference, updated_at: new Date().toISOString() })
+        .eq("id", data.attendee_id);
+
+      if (queueError) throw queueError;
     }
 
     return NextResponse.json({
@@ -265,6 +304,7 @@ export async function PATCH(request: Request) {
         paidAt: data.paid_at,
         paidByCommittee: data.paid_by_committee,
         notes: data.notes ?? null,
+        conference: data.conference ?? "leyte",
       },
     });
   } catch (error) {
@@ -289,6 +329,7 @@ export async function POST(request: Request) {
   // Check if this is bulk payment
   if ("attendeeIds" in body && Array.isArray(body.attendeeIds)) {
     const bulkBody = body as BulkPaymentRequest;
+    const selectedMethod: "cash" | "online" = bulkBody.paymentMethod === "online" ? "online" : "cash";
 
     if (!Array.isArray(bulkBody.attendeeIds) || bulkBody.attendeeIds.length === 0) {
       return NextResponse.json({ success: false, message: "attendeeIds must be a non-empty array" }, { status: 400 });
@@ -307,7 +348,14 @@ export async function POST(request: Request) {
       const attendeeId = bulkBody.attendeeIds[i];
       const attendeeName = bulkBody.attendeeNames[i] || `Attendee ${i + 1}`;
 
-      const result = await processSinglePayment(supabase, attendeeId, attendeeName, bulkBody.committeeName, conference);
+      const result = await processSinglePayment(
+        supabase,
+        attendeeId,
+        attendeeName,
+        bulkBody.committeeName,
+        conference,
+        selectedMethod,
+      );
 
       if (result.success && result.payment) {
         successful.push(result.payment);
@@ -332,6 +380,7 @@ export async function POST(request: Request) {
   } else {
     // Single payment
     const singleBody = body as PaymentRequest;
+    const selectedMethod: "cash" | "online" = singleBody.paymentMethod === "online" ? "online" : "cash";
 
     if (!singleBody.attendeeId || !singleBody.attendeeName) {
       return NextResponse.json({ success: false, message: "attendeeId and attendeeName are required" }, { status: 400 });
@@ -342,7 +391,14 @@ export async function POST(request: Request) {
     }
 
     const conference = mapConferenceLabel(singleBody.conferenceLabel);
-    const result = await processSinglePayment(supabase, singleBody.attendeeId, singleBody.attendeeName, singleBody.committeeName, conference);
+    const result = await processSinglePayment(
+      supabase,
+      singleBody.attendeeId,
+      singleBody.attendeeName,
+      singleBody.committeeName,
+      conference,
+      selectedMethod,
+    );
 
     if (result.success && result.payment) {
       return NextResponse.json({
