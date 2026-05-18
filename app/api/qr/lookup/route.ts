@@ -197,24 +197,5 @@ export async function POST(request: Request) {
     checkedIn: !!checkin?.checked_in,
     lunch: !!checkin?.lunch,
     isWalkIn: typeof attendee.attendee_key === "string" && attendee.attendee_key.startsWith("walk-"),
-    ...(paymentDetails
-      ? {
-          paymentStatus: paymentDetails.paymentStatus,
-          paidAt: paymentDetails.paidAt,
-          paidByCommittee: paymentDetails.paidByCommittee,
-        }
-      : {}),
-    ...(kitDetails
-      ? {
-          kit: {
-            toteBag: kitDetails.toteBag,
-            mug: kitDetails.mug,
-            notebook: kitDetails.notebook,
-            pencil: kitDetails.pencil,
-            claimedAt: kitDetails.claimedAt,
-            claimedByCommittee: kitDetails.claimedByCommittee,
-          },
-        }
-      : {}),
   });
 }
